@@ -7,11 +7,13 @@
     "init": "husky",
     "build:md": "npx @kne/md-doc",
     "start:md": "npx @kne/md-doc --watch",
-    "prettier": "prettier --config .prettierrc --write '{libs/**/*,index}.{js,jsx,ts,tsx,json,css,scss}'",
+    "test": "mocha test/**/*.test.js",
+    "test:coverage": "nyc --reporter=html --reporter=text mocha test/**/*.test.js",
+    "prettier": "prettier --config .prettierrc --write '{libs/**/*,index,test/**/*}.{js,jsx,ts,tsx,json,css,scss}'",
     "lint-staged": "npx lint-staged"
   },
   "lint-staged": {
-    "{libs/**/*,index}.{js,jsx,ts,tsx,json,css,scss}": [
+    "{libs/**/*,index,test/**/*}.{js,jsx,ts,tsx,json,css,scss}": [
       "prettier --config .prettierrc --write",
       "git add"
     ]
@@ -24,26 +26,46 @@
     "type": "git",
     "url": "git+https://github.com/kne-union/fastify-app-runtime.git"
   },
-  "keywords": [],
+  "keywords": [
+    "fastify",
+    "fastify-plugin",
+    "remote-module-config",
+    "module-federation",
+    "health-check",
+    "readiness",
+    "app-config",
+    "static",
+    "spa"
+  ],
   "author": "linzp",
   "license": "ISC",
   "bugs": {
     "url": "https://github.com/kne-union/fastify-app-runtime/issues"
   },
   "homepage": "https://github.com/kne-union/fastify-app-runtime#readme",
+  "dependencies": {
+    "@kne/fastify-setting": "^0.1.0"
+  },
   "peerDependencies": {
+    "@fastify/static": "*",
     "@kne/fastify-namespace": "*",
     "@kne/fastify-sequelize": "*",
-    "fastify-plugin": ">=5"
+    "fastify-plugin": ">=4"
   },
   "devDependencies": {
     "@fastify/env": "^5.0.2",
-    "@kne/fastify-sequelize": "^3.0.6",
-    "fastify": "^5.4.0",
-    "fastify-plugin": "^5.0.1",
+    "@fastify/static": "^10.1.6",
+    "@kne/fastify-namespace": "^1.2.1",
+    "@kne/fastify-sequelize": "^4.0.5",
+    "chai": "^6.3.0",
+    "fastify": "^5.12.5",
+    "fastify-plugin": "^6.0.1",
     "husky": "^9.0.11",
+    "mocha": "^12.0.3",
     "nodemon": "^3.1.3",
+    "nyc": "^18.0.0",
     "prettier": "^3.2.5",
-    "sqlite3": "^5.1.7"
+    "sequelize": "^6.37.8",
+    "sqlite3": "^6.0.1"
   }
 }
