@@ -26,11 +26,27 @@ module.exports = fp(
         },
         setting: {},
         readyChecks: {},
-        timeout: 3000
+        timeout: 3000,
+        openApi: {}
       },
       options
     );
     options.setting = Object.assign({ name: 'setting' }, options.setting);
+    options.openApi =
+      options.openApi &&
+      Object.assign(
+        {
+          path: '/open-api.json',
+          getAuthenticate: () => {
+            if (!fastify.account?.authenticate?.admin) {
+              return null;
+            }
+            const { user, admin } = fastify.account.authenticate;
+            return [user, admin];
+          }
+        },
+        options.openApi
+      );
 
     fastify.register(require('@kne/fastify-setting'), options.setting);
 

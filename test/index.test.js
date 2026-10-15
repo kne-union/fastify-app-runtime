@@ -234,6 +234,98 @@ describe('@kne/fastify-app-runtime', function () {
     });
   });
 
+  describe('OpenAPI 文档测试', () => {
+    const mockAccount = app => {
+      app.decorate('account', {
+        authenticate: {
+          user: async request => {
+            request.userInfo = { id: 'u1' };
+          },
+          admin: async request => {
+            if (request.headers['x-admin'] !== '1') {
+              throw Object.assign(new Error('不能执行该操作，需要超级管理员权限'), { statusCode: 401 });
+            }
+          }
+        }
+      });
+    };
+
+    const registerSwagger = app => {
+      app.register(require('@fastify/swagger'), { openapi: { info: { title: 'demo', version: '1.2.3' } } });
+      app.register(async instance => {
+        instance.get('/api/biz', { schema: { summary: '业务接口' } }, async () => ({ ok: true }));
+      });
+    };
+
+    it('should return open-api document for admin', async () => {
+      fastify = await createApp({
+        options: { root: createBuildDir({}) },
+        beforeRegister: app => {
+          registerSwagger(app);
+          mockAccount(app);
+        }
+      });
+      const res = await fastify.inject({ method: 'GET', url: '/open-api.json', headers: { 'x-admin': '1' } });
+      expect(res.statusCode).to.equal(200);
+      const data = res.json();
+      expect(data.openapi).to.be.a('string');
+      expect(data.info.title).to.equal('demo');
+      expect(data.paths).to.have.property('/api/biz');
+      expect(data.paths).to.have.property('/health');
+    });
+
+    it('should reject non admin user', async () => {
+      fastify = await createApp({
+        options: { root: createBuildDir({}) },
+        beforeRegister: app => {
+          registerSwagger(app);
+          mockAccount(app);
+        }
+      });
+      const res = await fastify.inject({ method: 'GET', url: '/open-api.json' });
+      expect(res.statusCode).to.equal(401);
+    });
+
+    it('should not register route when host has no account module', async () => {
+      fastify = await createApp({ options: { root: createBuildDir({}), static: false }, beforeRegister: registerSwagger });
+      const res = await fastify.inject({ method: 'GET', url: '/open-api.json' });
+      expect(res.statusCode).to.equal(404);
+    });
+
+    it('should not register route when @fastify/swagger is not registered', async () => {
+      fastify = await createApp({ options: { root: createBuildDir({}), static: false }, beforeRegister: mockAccount });
+      const res = await fastify.inject({ method: 'GET', url: '/open-api.json', headers: { 'x-admin': '1' } });
+      expect(res.statusCode).to.equal(404);
+    });
+
+    it('should not register route when openApi is false', async () => {
+      fastify = await createApp({
+        options: { root: createBuildDir({}), static: false, openApi: false },
+        beforeRegister: app => {
+          registerSwagger(app);
+          mockAccount(app);
+        }
+      });
+      const res = await fastify.inject({ method: 'GET', url: '/open-api.json', headers: { 'x-admin': '1' } });
+      expect(res.statusCode).to.equal(404);
+    });
+
+    it('should use custom path', async () => {
+      fastify = await createApp({
+        options: { root: createBuildDir({}), static: false, openApi: { path: '/api/v1/open-api.json' } },
+        beforeRegister: app => {
+          registerSwagger(app);
+          mockAccount(app);
+        }
+      });
+      const res = await fastify.inject({ method: 'GET', url: '/api/v1/open-api.json', headers: { 'x-admin': '1' } });
+      expect(res.statusCode).to.equal(200);
+      expect(res.json().paths).to.have.property('/api/biz');
+      const old = await fastify.inject({ method: 'GET', url: '/open-api.json', headers: { 'x-admin': '1' } });
+      expect(old.statusCode).to.equal(404);
+    });
+  });
+
   describe('前端托管测试', () => {
     const files = {
       'index.html': '<html>local</html>',
