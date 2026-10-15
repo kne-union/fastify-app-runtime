@@ -1,6 +1,6 @@
 {
   "name": "@kne/fastify-app-runtime",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Fastify 应用运行时插件：前端托管、remote-module-config.json、健康检查与应用设置",
   "main": "index.js",
   "scripts": {
@@ -55,6 +55,7 @@
   "devDependencies": {
     "@fastify/env": "^5.0.2",
     "@fastify/static": "^10.1.6",
+    "@fastify/swagger": "^9.9.2",
     "@kne/fastify-namespace": "^1.2.1",
     "@kne/fastify-sequelize": "^4.0.5",
     "chai": "^6.3.0",

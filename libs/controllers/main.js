@@ -60,4 +60,27 @@ module.exports = fp(async (fastify, options) => {
       return utils.sendJson(reply, { data: await services.getAppConfig(), cors });
     }
   );
+
+  const authenticate = options.openApi && options.openApi.getAuthenticate();
+  if (!authenticate || authenticate.length === 0) {
+    return;
+  }
+  if (typeof fastify.swagger !== 'function') {
+    fastify.log.warn('app-runtime: open-api disabled, register @fastify/swagger before other routes to enable it');
+    return;
+  }
+
+  fastify.get(
+    options.openApi.path,
+    {
+      onRequest: authenticate,
+      schema: {
+        summary: 'OpenAPI 文档',
+        description: '返回 @fastify/swagger 收集的当前系统 OpenAPI 文档，需要管理员权限'
+      }
+    },
+    async (request, reply) => {
+      return utils.sendJson(reply, { data: fastify.swagger(), cors });
+    }
+  );
 });

@@ -26,6 +26,7 @@ npm i --save @kne/fastify-app-runtime
 | 远程组件配置 | `GET /remote-module-config.json`，供宿主用 `@kne/remote-loader` 的 `configUrl` 加载本应用的远程组件 |
 | 健康检查 | `GET /health` 存活检查、`GET /ready` 就绪检查（数据库 + 自定义检查） |
 | 应用设置 | `GET /app-config.json` 返回运行信息与 `@kne/fastify-setting` 中已启用的设置项 |
+| OpenAPI 文档 | `GET /open-api.json` 返回宿主 `@fastify/swagger` 收集的文档，需管理员权限；宿主无 `account` 模块时不开启 |
 
 > **关键设计**：入口 HTML 与 `remote-module-config*.json` 由同一个 `getEntry` 决定，文件名映射规则与 `@kne/npm-tools entryHtml` 一致，构建产物与服务端读取不会错位。
 
@@ -42,6 +43,7 @@ npm i --save @kne/fastify-app-runtime
              ├→ GET /health
              ├→ GET /ready ─→ sequelize.authenticate() + readyChecks（并行、各自超时）
              ├→ GET /app-config.json ─→ runtime + setting.services.detail()
+             ├→ GET /open-api.json ─→ fastify.swagger()（需 account.admin；无 account 或 swagger 时不注册）
              └→ @fastify/static(build) + NotFound 回落入口页（static 为 false 时不注册）
 ```
 
@@ -137,6 +139,9 @@ fastify.register(require('@kne/fastify-app-runtime'), {
 | setting | object | 否 | `{}` | 透传给 `@kne/fastify-setting` 的参数（`name` 默认 `setting`） |
 | readyChecks | object | 否 | `{}` | 自定义就绪检查，`{ 名称: () => Promise }` |
 | timeout | number | 否 | `3000` | 读取设置与每项就绪检查的超时（毫秒） |
+| openApi | object / boolean | 否 | `{}` | OpenAPI 文档接口配置，`false` 不注册 |
+| openApi.path | string | 否 | `/open-api.json` | 文档接口路径 |
+| openApi.getAuthenticate | function | 否 | `fastify.account` 的 user + admin | 返回 `onRequest` 鉴权数组；返回空值或空数组时不注册接口 |
 
 默认 `getEntry`：
 
@@ -161,7 +166,7 @@ fastify.register(require('@kne/fastify-app-runtime'), {
 
 #### 接口
 
-以下接口均挂在根路径，返回原始 JSON（不经 `{ code, data }` 包装），带 `Cache-Control: no-cache` 与 `cors` 指定的跨域头。
+以下接口均挂在根路径（`openApi.path` 可自定义），返回原始 JSON（不经 `{ code, data }` 包装），带 `Cache-Control: no-cache` 与 `cors` 指定的跨域头。
 
 ##### GET /remote-module-config.json
 
@@ -203,6 +208,46 @@ fastify.register(require('@kne/fastify-app-runtime'), {
 }
 ```
 
+##### GET /open-api.json
+
+返回 `@fastify/swagger` 收集的当前系统 OpenAPI 文档（即 `fastify.swagger()`），默认需要 `account` 的 user + admin 鉴权，未通过返回 401。
+
+注册条件（任一不满足则不注册，访问返回 404）：
+
+| 条件 | 说明 |
+| --- | --- |
+| `openApi` 不为 `false` | 显式关闭时不注册 |
+| `openApi.getAuthenticate()` 返回非空数组 | 默认宿主未注册 `fastify.account` 时返回 `null` |
+| 宿主已注册 `@fastify/swagger` | 存在 `fastify.swagger`；有鉴权但缺少 swagger 时打 warn 日志 |
+
+> **注意**：`@fastify/swagger` 通过 `onRoute` 钩子收集路由，只能收集到它之后定义的路由，须在 `server.js` 最前面注册；本插件不注册 swagger，宿主需自行安装。
+
+```js
+// server.js：在注册其它插件与路由之前注册 @fastify/swagger
+fastify.register(require('@fastify/swagger'), {
+  openapi: {
+    info: { title: packageJson.name, version: packageJson.version }
+  }
+});
+
+// ...@kne/fastify-sequelize、@kne/fastify-account、业务模块
+
+fastify.register(require('@kne/fastify-app-runtime'), {
+  root: path.join(__dirname, './build'),
+  packageJson
+});
+```
+
+```json
+{
+  "openapi": "3.0.3",
+  "info": { "title": "ai-interview-flowup", "version": "0.1.194" },
+  "paths": {
+    "/health": { "get": { "summary": "存活检查" } }
+  }
+}
+```
+
 ##### 前端托管
 
 | 请求 | 行为 |
@@ -240,5 +285,6 @@ fastify.register(require('@kne/fastify-app-runtime'), {
 | 机制 | 说明 |
 | --- | --- |
 | 依赖声明 | 插件名 `fastify-app-runtime`，依赖 `fastify-sequelize`，未先注册时启动报错 |
+| OpenAPI 文档 | 依赖宿主提前注册的 `@fastify/swagger` 与 `fastify.account`，在注册本插件时判断，须先于本插件注册 |
 | 建表 | `@kne/fastify-setting` 的设置表随 `fastify.sequelize.sync()` 创建，须在 sync 之前注册本插件 |
 | 版本兼容 | `@fastify/static`、`fastify-plugin` 为 peer 依赖，沿用业务项目已安装版本（fastify 4 / 5） |
