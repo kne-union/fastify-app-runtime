@@ -43,14 +43,13 @@ module.exports = fp(
             if (!fastify.account?.authenticate?.admin) {
               return null;
             }
-            const { user, admin } = fastify.account.authenticate;
+            const { user } = fastify.account.authenticate;
             return [
               async request => {
                 if (await verifyServiceToken(fastify.oidc, request, options.openApi.serviceScope)) {
                   return;
                 }
                 await user(request);
-                await admin(request);
               }
             ];
           }

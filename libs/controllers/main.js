@@ -76,7 +76,7 @@ module.exports = fp(async (fastify, options) => {
       onRequest: authenticate,
       schema: {
         summary: 'OpenAPI 文档',
-        description: '返回 @fastify/swagger 收集的当前系统 OpenAPI 文档，需要管理员权限'
+        description: '返回 @fastify/swagger 收集的当前系统 OpenAPI 文档，需要登录'
       }
     },
     async (request, reply) => {

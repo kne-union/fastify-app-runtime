@@ -239,6 +239,10 @@ describe('@kne/fastify-app-runtime', function () {
       app.decorate('account', {
         authenticate: {
           user: async request => {
+            const token = String(request.headers.authorization || '').replace(/^Bearer\s+/i, '');
+            if (!token || token === 'invalid' || token === 'service' || token === 'service-no-scope') {
+              throw Object.assign(new Error('未登录'), { statusCode: 401 });
+            }
             request.userInfo = { id: 'u1' };
           },
           admin: async request => {
@@ -257,7 +261,7 @@ describe('@kne/fastify-app-runtime', function () {
       });
     };
 
-    it('should return open-api document for admin', async () => {
+    it('should return open-api document for a logged-in user', async () => {
       fastify = await createApp({
         options: { root: createBuildDir({}) },
         beforeRegister: app => {
@@ -265,7 +269,7 @@ describe('@kne/fastify-app-runtime', function () {
           mockAccount(app);
         }
       });
-      const res = await fastify.inject({ method: 'GET', url: '/open-api.json', headers: { 'x-admin': '1' } });
+      const res = await fastify.inject({ method: 'GET', url: '/open-api.json', headers: { authorization: 'Bearer user' } });
       expect(res.statusCode).to.equal(200);
       const data = res.json();
       expect(data.openapi).to.be.a('string');
@@ -274,7 +278,7 @@ describe('@kne/fastify-app-runtime', function () {
       expect(data.paths).to.have.property('/health');
     });
 
-    it('should reject non admin user', async () => {
+    it('should reject anonymous user', async () => {
       fastify = await createApp({
         options: { root: createBuildDir({}) },
         beforeRegister: app => {
@@ -347,14 +351,14 @@ describe('@kne/fastify-app-runtime', function () {
         expect(res.json().paths).to.have.property('/api/biz');
       });
 
-      it('should fall back to admin check for client token without scope, user token or invalid token', async () => {
+      it('should accept a user token and reject a client token without scope', async () => {
         fastify = await createOidcApp();
-        for (const token of ['service-no-scope', 'user', 'invalid']) {
+        for (const token of ['service-no-scope', 'invalid']) {
           const res = await fastify.inject({ method: 'GET', url: '/open-api.json', headers: { authorization: `Bearer ${token}` } });
           expect(res.statusCode, token).to.equal(401);
         }
-        const admin = await fastify.inject({ method: 'GET', url: '/open-api.json', headers: { authorization: 'Bearer user', 'x-admin': '1' } });
-        expect(admin.statusCode).to.equal(200);
+        const user = await fastify.inject({ method: 'GET', url: '/open-api.json', headers: { authorization: 'Bearer user' } });
+        expect(user.statusCode).to.equal(200);
       });
     });
 
@@ -366,10 +370,10 @@ describe('@kne/fastify-app-runtime', function () {
           mockAccount(app);
         }
       });
-      const res = await fastify.inject({ method: 'GET', url: '/api/v1/open-api.json', headers: { 'x-admin': '1' } });
+      const res = await fastify.inject({ method: 'GET', url: '/api/v1/open-api.json', headers: { authorization: 'Bearer user' } });
       expect(res.statusCode).to.equal(200);
       expect(res.json().paths).to.have.property('/api/biz');
-      const old = await fastify.inject({ method: 'GET', url: '/open-api.json', headers: { 'x-admin': '1' } });
+      const old = await fastify.inject({ method: 'GET', url: '/open-api.json', headers: { authorization: 'Bearer user' } });
       expect(old.statusCode).to.equal(404);
     });
   });
