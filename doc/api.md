@@ -93,7 +93,7 @@
 | 凭证 | 说明 |
 | --- | --- |
 | OIDC 服务令牌 | 宿主已注册 `@kne/fastify-oidc`；`Authorization: Bearer` 为 IdP 以 client_credentials 签发给本应用 audience 的令牌，且 scope 含 `openApi.serviceScope`。应用中心 MCP 用此方式读取子应用文档 |
-| 管理员 | `account` 的 user + admin |
+| 登录用户 | `account` 的 user |
 
 注册条件（任一不满足则不注册，访问返回 404）：
 
