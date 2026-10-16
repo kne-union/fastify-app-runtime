@@ -310,6 +310,54 @@ describe('@kne/fastify-app-runtime', function () {
       expect(res.statusCode).to.equal(404);
     });
 
+    describe('OIDC 服务令牌', () => {
+      const clientTokenClaim = 'https://idp.example.com/client_token';
+      const tokens = {
+        service: { [clientTokenClaim]: true, scope: 'open-api:read' },
+        'service-no-scope': { [clientTokenClaim]: true, scope: 'user:read' },
+        user: { sub: 'u1', scope: 'open-api:read' }
+      };
+      const mockOidc = app => {
+        app.decorate('oidc', {
+          options: { runtime: { claims: { clientToken: clientTokenClaim } } },
+          verifier: {
+            verifyAccessToken: async token => {
+              if (!tokens[token]) {
+                throw new Error('invalid token');
+              }
+              return tokens[token];
+            }
+          }
+        });
+      };
+      const createOidcApp = () =>
+        createApp({
+          options: { root: createBuildDir({}), static: false },
+          beforeRegister: app => {
+            registerSwagger(app);
+            mockAccount(app);
+            mockOidc(app);
+          }
+        });
+
+      it('should accept client token with open-api:read scope without admin', async () => {
+        fastify = await createOidcApp();
+        const res = await fastify.inject({ method: 'GET', url: '/open-api.json', headers: { authorization: 'Bearer service' } });
+        expect(res.statusCode).to.equal(200);
+        expect(res.json().paths).to.have.property('/api/biz');
+      });
+
+      it('should fall back to admin check for client token without scope, user token or invalid token', async () => {
+        fastify = await createOidcApp();
+        for (const token of ['service-no-scope', 'user', 'invalid']) {
+          const res = await fastify.inject({ method: 'GET', url: '/open-api.json', headers: { authorization: `Bearer ${token}` } });
+          expect(res.statusCode, token).to.equal(401);
+        }
+        const admin = await fastify.inject({ method: 'GET', url: '/open-api.json', headers: { authorization: 'Bearer user', 'x-admin': '1' } });
+        expect(admin.statusCode).to.equal(200);
+      });
+    });
+
     it('should use custom path', async () => {
       fastify = await createApp({
         options: { root: createBuildDir({}), static: false, openApi: { path: '/api/v1/open-api.json' } },

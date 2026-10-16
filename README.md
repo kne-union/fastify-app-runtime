@@ -26,7 +26,7 @@ npm i --save @kne/fastify-app-runtime
 | 远程组件配置 | `GET /remote-module-config.json`，供宿主用 `@kne/remote-loader` 的 `configUrl` 加载本应用的远程组件 |
 | 健康检查 | `GET /health` 存活检查、`GET /ready` 就绪检查（数据库 + 自定义检查） |
 | 应用设置 | `GET /app-config.json` 返回运行信息与 `@kne/fastify-setting` 中已启用的设置项 |
-| OpenAPI 文档 | `GET /open-api.json` 返回宿主 `@fastify/swagger` 收集的文档，需管理员权限；宿主无 `account` 模块时不开启 |
+| OpenAPI 文档 | `GET /open-api.json` 返回宿主 `@fastify/swagger` 收集的文档，需管理员或带 `open-api:read` 的 OIDC 服务令牌（应用中心 MCP 使用）；宿主无 `account` 模块时不开启 |
 
 > **关键设计**：入口 HTML 与 `remote-module-config*.json` 由同一个 `getEntry` 决定，文件名映射规则与 `@kne/npm-tools entryHtml` 一致，构建产物与服务端读取不会错位。
 
@@ -43,7 +43,7 @@ npm i --save @kne/fastify-app-runtime
              ├→ GET /health
              ├→ GET /ready ─→ sequelize.authenticate() + readyChecks（并行、各自超时）
              ├→ GET /app-config.json ─→ runtime + setting.services.detail()
-             ├→ GET /open-api.json ─→ fastify.swagger()（需 account.admin；无 account 或 swagger 时不注册）
+             ├→ GET /open-api.json ─→ fastify.swagger()（需 account.admin 或 OIDC 服务令牌；无 account 或 swagger 时不注册）
              └→ @fastify/static(build) + NotFound 回落入口页（static 为 false 时不注册）
 ```
 
@@ -141,7 +141,8 @@ fastify.register(require('@kne/fastify-app-runtime'), {
 | timeout | number | 否 | `3000` | 读取设置与每项就绪检查的超时（毫秒） |
 | openApi | object / boolean | 否 | `{}` | OpenAPI 文档接口配置，`false` 不注册 |
 | openApi.path | string | 否 | `/open-api.json` | 文档接口路径 |
-| openApi.getAuthenticate | function | 否 | `fastify.account` 的 user + admin | 返回 `onRequest` 鉴权数组；返回空值或空数组时不注册接口 |
+| openApi.serviceScope | string | 否 | `open-api:read` | 默认鉴权中放行的 OIDC 服务令牌 scope |
+| openApi.getAuthenticate | function | 否 | OIDC 服务令牌，或 `fastify.account` 的 user + admin | 返回 `onRequest` 鉴权数组；返回空值或空数组时不注册接口 |
 
 默认 `getEntry`：
 
@@ -210,7 +211,12 @@ fastify.register(require('@kne/fastify-app-runtime'), {
 
 ##### GET /open-api.json
 
-返回 `@fastify/swagger` 收集的当前系统 OpenAPI 文档（即 `fastify.swagger()`），默认需要 `account` 的 user + admin 鉴权，未通过返回 401。
+返回 `@fastify/swagger` 收集的当前系统 OpenAPI 文档（即 `fastify.swagger()`），未通过鉴权返回 401。默认满足以下任一即可访问：
+
+| 凭证 | 说明 |
+| --- | --- |
+| OIDC 服务令牌 | 宿主已注册 `@kne/fastify-oidc`；`Authorization: Bearer` 为 IdP 以 client_credentials 签发给本应用 audience 的令牌，且 scope 含 `openApi.serviceScope`。应用中心 MCP 用此方式读取子应用文档 |
+| 管理员 | `account` 的 user + admin |
 
 注册条件（任一不满足则不注册，访问返回 404）：
 
@@ -279,6 +285,7 @@ fastify.register(require('@kne/fastify-app-runtime'), {
 | `resolveConfigUrl(url, origin)` | 补全远程组件 url |
 | `withTimeout(task, ms)` | 带超时执行，超时错误 `code` 为 `TIMEOUT` |
 | `sendJson(reply, { statusCode, data, cors })` | 以流返回 JSON |
+| `verifyServiceToken(oidc, request, scope)` | 校验请求是否携带本应用 audience、含指定 scope 的 OIDC client 令牌 |
 
 #### 机制说明
 

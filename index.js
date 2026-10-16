@@ -1,6 +1,7 @@
 const fp = require('fastify-plugin');
 const path = require('node:path');
 const fs = require('node:fs');
+const { verifyServiceToken } = require('./libs/utils');
 
 module.exports = fp(
   async (fastify, options) => {
@@ -37,12 +38,21 @@ module.exports = fp(
       Object.assign(
         {
           path: '/open-api.json',
+          serviceScope: 'open-api:read',
           getAuthenticate: () => {
             if (!fastify.account?.authenticate?.admin) {
               return null;
             }
             const { user, admin } = fastify.account.authenticate;
-            return [user, admin];
+            return [
+              async request => {
+                if (await verifyServiceToken(fastify.oidc, request, options.openApi.serviceScope)) {
+                  return;
+                }
+                await user(request);
+                await admin(request);
+              }
+            ];
           }
         },
         options.openApi

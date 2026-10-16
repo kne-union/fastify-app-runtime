@@ -35,9 +35,26 @@ const sendJson = (reply, { statusCode = 200, data, cors }) => {
   return Readable.from([JSON.stringify(data)]);
 };
 
+// 应用中心等服务端用 OIDC client_credentials 令牌调用：须签发给本应用 audience、为 client 令牌且含指定 scope
+const verifyServiceToken = async (oidc, request, scope) => {
+  const [scheme, token] = String(request.headers.authorization || '').split(' ');
+  if (!oidc?.verifier || !scope || String(scheme).toLowerCase() !== 'bearer' || !token) {
+    return false;
+  }
+  const payload = await oidc.verifier.verifyAccessToken(token).catch(() => null);
+  const clientTokenClaim = oidc.options?.runtime?.claims?.clientToken;
+  if (!payload || !clientTokenClaim || payload[clientTokenClaim] !== true) {
+    return false;
+  }
+  return String(payload.scope || '')
+    .split(' ')
+    .includes(scope);
+};
+
 module.exports = {
   getRemoteModuleConfigFile,
   resolveConfigUrl,
   withTimeout,
-  sendJson
+  sendJson,
+  verifyServiceToken
 };

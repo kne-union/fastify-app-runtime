@@ -8,7 +8,7 @@
 | 远程组件配置 | `GET /remote-module-config.json`，供宿主用 `@kne/remote-loader` 的 `configUrl` 加载本应用的远程组件 |
 | 健康检查 | `GET /health` 存活检查、`GET /ready` 就绪检查（数据库 + 自定义检查） |
 | 应用设置 | `GET /app-config.json` 返回运行信息与 `@kne/fastify-setting` 中已启用的设置项 |
-| OpenAPI 文档 | `GET /open-api.json` 返回宿主 `@fastify/swagger` 收集的文档，需管理员权限；宿主无 `account` 模块时不开启 |
+| OpenAPI 文档 | `GET /open-api.json` 返回宿主 `@fastify/swagger` 收集的文档，需管理员或带 `open-api:read` 的 OIDC 服务令牌（应用中心 MCP 使用）；宿主无 `account` 模块时不开启 |
 
 > **关键设计**：入口 HTML 与 `remote-module-config*.json` 由同一个 `getEntry` 决定，文件名映射规则与 `@kne/npm-tools entryHtml` 一致，构建产物与服务端读取不会错位。
 
@@ -25,7 +25,7 @@
              ├→ GET /health
              ├→ GET /ready ─→ sequelize.authenticate() + readyChecks（并行、各自超时）
              ├→ GET /app-config.json ─→ runtime + setting.services.detail()
-             ├→ GET /open-api.json ─→ fastify.swagger()（需 account.admin；无 account 或 swagger 时不注册）
+             ├→ GET /open-api.json ─→ fastify.swagger()（需 account.admin 或 OIDC 服务令牌；无 account 或 swagger 时不注册）
              └→ @fastify/static(build) + NotFound 回落入口页（static 为 false 时不注册）
 ```
 
