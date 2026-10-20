@@ -12,6 +12,9 @@
 | static | object / boolean | 否 | `{ prefix: '/' }` | 前端托管配置，`false` 不托管 |
 | static.prefix | string | 否 | `/` | 静态资源路由前缀 |
 | static.fallback | boolean | 否 | `true` | 是否注册 NotFound 回落入口页；宿主已有 `setNotFoundHandler` 时设为 `false` |
+| static.manifestFiles | string[] | 否 | `[]` | 以 `application/manifest+json` 返回的 manifest 文件名（相对 `root`），文件不存在时回落入口页 |
+| pwa | object | 否 | `null` | 入口页 PWA 注入配置，不传则原样返回入口 HTML |
+| pwa.entries | object[] | 否 | `[]` | `{ path, manifest, icon, title }`，回落到入口页时按路径前缀匹配（最长优先），命中则用 `@kne/pwa-document` 改写入口 HTML 的 manifest、图标与标题 |
 | getEntry | function | 否 | 见下 | `({ env, config }) => string`，返回入口 HTML 文件名 |
 | setting | object | 否 | `{}` | 透传给 `@kne/fastify-setting` 的参数（`name` 默认 `setting`） |
 | readyChecks | object | 否 | `{}` | 自定义就绪检查，`{ 名称: () => Promise }` |
@@ -137,8 +140,9 @@ fastify.register(require('@kne/fastify-app-runtime'), {
 | --- | --- |
 | `GET {prefix}` 下存在的文件 | 由 `@fastify/static` 返回 |
 | `GET {prefix}` | 返回入口 HTML |
-| 其它未匹配的 GET | 返回入口 HTML（`static.fallback` 为 `true` 时） |
-| 其它未匹配的非 GET | 404 |
+| `GET {prefix}{manifestFiles}` | 以 `application/manifest+json` 返回 |
+| 其它未匹配的 GET / HEAD | 返回入口 HTML（`static.fallback` 为 `true` 时）；命中 `pwa.entries` 时注入对应 PWA 标签 |
+| 其它未匹配的请求 | 404 |
 
 ### 程序化 API
 

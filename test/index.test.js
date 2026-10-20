@@ -426,5 +426,55 @@ describe('@kne/fastify-app-runtime', function () {
       const res = await fastify.inject({ method: 'GET', url: '/any/page' });
       expect(res.json()).to.deep.equal({ custom: true });
     });
+
+    it('should answer HEAD on SPA fallback', async () => {
+      fastify = await createApp({ options: { root: createBuildDir(files) } });
+      const res = await fastify.inject({ method: 'HEAD', url: '/jobs/detail' });
+      expect(res.statusCode).to.equal(200);
+      expect(res.headers['content-type']).to.contain('text/html');
+    });
+
+    it('should keep default manifest content type and skip pwa when options are not passed', async () => {
+      const html = '<html><head><meta charset="utf-8"></head><body></body></html>';
+      fastify = await createApp({ options: { root: createBuildDir({ 'index.html': html, 'manifest.json': { name: 'demo' } }) } });
+      const manifest = await fastify.inject({ method: 'GET', url: '/manifest.json' });
+      expect(manifest.statusCode).to.equal(200);
+      expect(manifest.headers['content-type']).to.contain('application/json');
+      const page = await fastify.inject({ method: 'GET', url: '/apps' });
+      expect(page.body).to.equal(html);
+    });
+
+    it('should serve manifestFiles as application/manifest+json and fall back when missing', async () => {
+      fastify = await createApp({
+        options: {
+          root: createBuildDir({ 'index.html': '<html>local</html>', 'manifest.json': { name: 'demo' } }),
+          static: { manifestFiles: ['manifest.json', 'manifest-apps.json'] }
+        }
+      });
+      const manifest = await fastify.inject({ method: 'GET', url: '/manifest.json' });
+      expect(manifest.headers['content-type']).to.contain('application/manifest+json');
+      expect(manifest.json()).to.deep.equal({ name: 'demo' });
+      const missing = await fastify.inject({ method: 'GET', url: '/manifest-apps.json' });
+      expect(missing.statusCode).to.equal(200);
+      expect(missing.body).to.equal('<html>local</html>');
+    });
+
+    it('should inject pwa tags into entry html for matched pwa entries', async () => {
+      const html =
+        '<html><head><meta charset="utf-8"><meta id="pwa-apple-title" name="apple-mobile-web-app-title" content="首页"><link id="pwa-manifest" rel="manifest" href="/manifest.json"></head><body><script>var a = 1;</script></body></html>';
+      fastify = await createApp({
+        options: {
+          root: createBuildDir({ 'index.html': html }),
+          pwa: { entries: [{ path: '/apps', manifest: '/manifest-apps.json', icon: '/pwa/apps.png', title: '应用中心' }] }
+        }
+      });
+      const apps = await fastify.inject({ method: 'GET', url: '/apps/detail?id=1' });
+      expect(apps.headers['content-type']).to.contain('text/html');
+      expect(apps.body).to.contain('href="/manifest-apps.json"');
+      expect(apps.body).to.contain('content="应用中心"');
+      expect(apps.body).to.contain('<script>var a = 1;</script>');
+      const other = await fastify.inject({ method: 'GET', url: '/admin' });
+      expect(other.body).to.equal(html);
+    });
   });
 });
