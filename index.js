@@ -88,7 +88,13 @@ module.exports = fp(
 
     // @fastify/static 会在 setHeaders 之后按扩展名覆盖 content-type，manifest 需单独路由
     staticOptions.manifestFiles.forEach(fileName => {
-      fastify.get(`${staticOptions.prefix.replace(/\/+$/, '')}/${fileName}`, async (request, reply) => {
+      const manifestSchema = {
+        tags: ['应用运行时-前端资源'],
+        summary: `PWA manifest：${fileName}`,
+        description: '读取构建目录中的同名文件并以 application/manifest+json 返回，文件不存在时交给 404 处理（开启 fallback 时返回入口 HTML）',
+        response: { 200: { description: 'manifest 文件原文' } }
+      };
+      fastify.get(`${staticOptions.prefix.replace(/\/+$/, '')}/${fileName}`, { schema: manifestSchema }, async (request, reply) => {
         const content = await fs.promises.readFile(path.join(options.root, fileName), 'utf8').catch(() => null);
         if (content === null) {
           return reply.callNotFound();
