@@ -173,6 +173,35 @@ module.exports = fp(async (fastify, options) => {
     '/app-ops/logs/files',
     withOps('app-ops:logs:read', async () => logs.files())
   );
+  // SSE 不能走 withOps 的 JSON 封装
+  fastify.get('/app-ops/logs/stream', async (request, reply) => {
+    try {
+      const payload = await requireOpsScope(fastify, request, 'app-ops:logs:read');
+      limiter.check(clientKeyFromRequest(request, payload));
+      await audit({
+        action: 'logs.stream',
+        result: 'ok',
+        statusCode: 200,
+        ip: request.ip,
+        userAgent: request.headers['user-agent'],
+        actor: payload?.sub || payload?.client_id || null
+      }).catch(() => {});
+      await logs.stream(request, reply, request.query || {});
+    } catch (err) {
+      await audit({
+        action: 'logs.stream',
+        result: 'error',
+        statusCode: err.statusCode || 500,
+        detail: err.message,
+        ip: request.ip,
+        userAgent: request.headers['user-agent']
+      }).catch(() => {});
+      if (reply.sent || reply.raw.headersSent) {
+        return;
+      }
+      return sendError(reply, err, cors);
+    }
+  });
 
   // —— 环境变量只读 ——
   fastify.get(
