@@ -30,10 +30,23 @@ module.exports = fp(
         setting: {},
         readyChecks: {},
         timeout: 3000,
-        openApi: {}
+        openApi: {},
+        /**
+         * 远程管理（App Ops）。也可用环境变量 APP_OPS_ENABLED=true|1|yes|on 开启。
+         * 未开启时不注册任何 /app-ops 路由。
+         * @type {{ enabled?: boolean, capabilities?: object, getPermissions?: Function, dataDir?: string, entries?: array }|boolean|undefined}
+         */
+        appOps: undefined
       },
       options
     );
+    if (options.appOps === true) {
+      options.appOps = { enabled: true };
+    } else if (options.appOps === false) {
+      options.appOps = { enabled: false };
+    } else {
+      options.appOps = Object.assign({}, options.appOps);
+    }
     options.setting = Object.assign({ name: 'setting' }, options.setting);
     options.openApi =
       options.openApi &&
@@ -70,6 +83,9 @@ module.exports = fp(
         ['controllers', path.resolve(__dirname, './libs/controllers')]
       ]
     });
+
+    // 远程管理：由 APP_OPS_ENABLED / options.appOps.enabled 总开关控制（默认关）
+    fastify.register(require('./libs/app-ops/register'), options);
 
     if (!options.static) {
       return;

@@ -2,7 +2,7 @@
 
 ### 描述
 
-Fastify 应用运行时插件：前端托管、remote-module-config.json、健康检查与应用设置
+Fastify 应用运行时插件：前端托管、健康检查、应用设置；可选 APP_OPS_ENABLED 开启远程管理 /app-ops
 
 ### 关键词
 
