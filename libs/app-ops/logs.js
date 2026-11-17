@@ -249,6 +249,137 @@ const createLogsRuntime = (fastify, options) => {
         throw err;
       }
       return listLogFiles(paths);
+    },
+    /**
+     * SSE：先回放最近 replay 行，再轮询当前日志文件推送新行。
+     * 调用方负责鉴权；本方法会 hijack reply。
+     */
+    stream: async (request, reply, query = {}) => {
+      if (isLogDisabled(options, config)) {
+        const err = new Error('日志未启用');
+        err.statusCode = 400;
+        throw err;
+      }
+      const streamName = query.stream === 'err' ? 'err' : 'out';
+      const filePath = streamName === 'err' ? paths.errPath : paths.outPath;
+      const replay = Math.min(500, Math.max(1, Number(query.replay || config.APP_OPS_LOG_SSE_REPLAY || process.env.APP_OPS_LOG_SSE_REPLAY || 100)));
+      const pollMs = Math.min(5000, Math.max(500, Number(query.pollMs || process.env.APP_OPS_LOG_SSE_POLL_MS || 1000)));
+
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no'
+      });
+
+      const writeEvent = (event, data) => {
+        if (event) {
+          reply.raw.write(`event: ${event}\n`);
+        }
+        reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+
+      const heartbeat = setInterval(
+        () => {
+          try {
+            reply.raw.write(`: ping\n\n`);
+          } catch (e) {
+            /* ignore */
+          }
+        },
+        Number(options.appOps?.sseHeartbeatMs || 15000)
+      );
+      if (heartbeat.unref) {
+        heartbeat.unref();
+      }
+
+      let closed = false;
+      let pollTimer = null;
+      const close = () => {
+        if (closed) {
+          return;
+        }
+        closed = true;
+        clearInterval(heartbeat);
+        if (pollTimer) {
+          clearInterval(pollTimer);
+        }
+        try {
+          reply.raw.end();
+        } catch (e) {
+          /* ignore */
+        }
+      };
+      request.raw.on('close', close);
+
+      // 回放最近行
+      try {
+        const { pageData } = await readLinesReverse(filePath, { perPage: replay });
+        for (const row of pageData || []) {
+          writeEvent('log', {
+            stream: streamName,
+            content: row.content,
+            line: row.line,
+            loggedAt: new Date().toISOString()
+          });
+        }
+      } catch (e) {
+        writeEvent('error', { message: e.message || 'replay failed' });
+      }
+
+      let offset = 0;
+      try {
+        offset = (await fs.promises.stat(filePath)).size;
+      } catch (e) {
+        offset = 0;
+      }
+
+      pollTimer = setInterval(async () => {
+        if (closed) {
+          return;
+        }
+        try {
+          const st = await fs.promises.stat(filePath);
+          if (st.size < offset) {
+            // 文件被 rotate，从头读
+            offset = 0;
+          }
+          if (st.size <= offset) {
+            return;
+          }
+          const chunk = await new Promise((resolve, reject) => {
+            const bufs = [];
+            const rs = createReadStream(filePath, { start: offset, end: st.size - 1 });
+            rs.on('data', d => bufs.push(d));
+            rs.on('error', reject);
+            rs.on('end', () => resolve(Buffer.concat(bufs).toString('utf8')));
+          });
+          offset = st.size;
+          const parts = chunk.split('\n');
+          // 末尾空段丢弃（文件常以 \n 结尾）
+          if (parts.length && parts[parts.length - 1] === '') {
+            parts.pop();
+          }
+          for (const content of parts) {
+            if (!content) {
+              continue;
+            }
+            writeEvent('log', {
+              stream: streamName,
+              content,
+              loggedAt: new Date().toISOString()
+            });
+          }
+        } catch (e) {
+          if (!closed) {
+            writeEvent('error', { message: e.message || 'poll failed' });
+          }
+        }
+      }, pollMs);
+      if (pollTimer.unref) {
+        pollTimer.unref();
+      }
     }
   };
 };
