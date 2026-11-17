@@ -21,6 +21,19 @@ const sendError = (reply, err, cors) => {
   });
 };
 
+/** 给 PlatformLink 等业务 ajax（期望 { code, data }）用的成功响应 */
+const sendBizOk = (reply, data, cors) => sendJson(reply, { data: { code: 0, data }, cors });
+
+/** 本地管理员接口：失败也回 { code, msg }，HTTP 仍用业务码，便于前端 TablePage 展示而非整页空白 */
+const sendBizError = (reply, err, cors) => {
+  const statusCode = err.statusCode || 500;
+  return sendJson(reply, {
+    statusCode,
+    data: { code: statusCode, msg: err.message || 'error', message: err.message || 'error' },
+    cors
+  });
+};
+
 const meta = request => ({
   ip: request.ip,
   userAgent: request.headers['user-agent']
@@ -42,6 +55,30 @@ module.exports = fp(async (fastify, options) => {
     rootDir: options.appOps?.dataDir || path.resolve(process.cwd(), './data'),
     fileName: options.appOps?.storeFile
   });
+  // 重启后把已配对主平台灌回 oidc.platforms，否则运维令牌仍按本地 IdP 验签会失败
+  if (fastify.oidc?.platforms?.upsert) {
+    try {
+      const paired = (await store.getPlatforms()).filter(p => p.status === 'paired');
+      for (const p of paired) {
+        fastify.oidc.platforms.upsert({
+          platformOrigin: p.platformOrigin,
+          platformName: p.platformName,
+          issuer: p.issuer || p.oidc?.issuer,
+          audience: p.audience || p.oidc?.audience,
+          spaClientId: p.spaClientId || p.oidc?.clientId,
+          serviceClientId: p.serviceClientId || p.oidc?.serviceClientId,
+          jwksUri: p.jwksUri,
+          status: 'paired',
+          pairedAt: p.pairedAt
+        });
+      }
+      if (paired.length) {
+        fastify.log.info({ count: paired.length }, 'app-ops: hydrated oidc.platforms from paired store');
+      }
+    } catch (err) {
+      fastify.log.warn({ err }, 'app-ops: hydrate oidc.platforms failed');
+    }
+  }
   const logs = createLogsRuntime(fastify, options);
   await logs.start();
   fastify.addHook('onClose', async () => logs.stop());
@@ -57,9 +94,53 @@ module.exports = fp(async (fastify, options) => {
     max: Number(options.appOps?.redeemRateLimitMax || 20)
   });
 
+  /** 从运维令牌还原主平台地址（iss / client_id → 已登记 platforms） */
+  const resolvePlatformOrigin = async payload => {
+    if (!payload) {
+      return null;
+    }
+    const platforms = await store.getPlatforms();
+    const norm = value =>
+      String(value || '')
+        .replace(/\/+$/, '')
+        .toLowerCase();
+    const iss = norm(payload.iss);
+    if (iss) {
+      const byIssuer = platforms.find(p => norm(p.issuer || p.oidc?.issuer) === iss);
+      if (byIssuer?.platformOrigin) {
+        return byIssuer.platformOrigin;
+      }
+    }
+    const clientId = String(payload.client_id || payload.clientId || '');
+    if (clientId) {
+      const byClient = platforms.find(p => p.serviceClientId === clientId || p.oidc?.serviceClientId === clientId || p.spaClientId === clientId);
+      if (byClient?.platformOrigin) {
+        return byClient.platformOrigin;
+      }
+    }
+    return null;
+  };
+
+  const auditOps = async (request, payload, entry = {}) => {
+    const platformOrigin = entry.platformOrigin !== undefined ? entry.platformOrigin : await resolvePlatformOrigin(payload);
+    return audit(
+      Object.assign(
+        {
+          ip: request.ip,
+          userAgent: request.headers['user-agent'],
+          actor: payload?.sub || payload?.client_id || null,
+          issuer: payload?.iss || null
+        },
+        entry,
+        { platformOrigin }
+      )
+    );
+  };
+
   const withOps = (scope, handler) => async (request, reply) => {
+    let payload;
     try {
-      const payload = await requireOpsScope(fastify, request, scope);
+      payload = await requireOpsScope(fastify, request, scope);
       limiter.check(clientKeyFromRequest(request, payload));
       const data = await handler(request, reply, payload);
       if (reply.sent) {
@@ -67,25 +148,24 @@ module.exports = fp(async (fastify, options) => {
       }
       return sendJson(reply, { data, cors });
     } catch (err) {
-      await audit({
+      await auditOps(request, payload, {
         action: scope,
         result: 'error',
         statusCode: err.statusCode || 500,
-        detail: err.message,
-        ip: request.ip,
-        userAgent: request.headers['user-agent']
+        detail: err.message
       }).catch(() => {});
       return sendError(reply, err, cors);
     }
   };
 
-  // —— 平台登记（本地管理员）——
+  // —— 平台登记（本地管理员，响应形对齐业务 ajax：{ code, data }）——
   fastify.get('/app-ops/link/platforms', async (request, reply) => {
     try {
       await requireLocalAdmin(fastify, request);
-      return sendJson(reply, { data: { pageData: await link.listPlatforms() }, cors });
+      const pageData = await link.listPlatforms();
+      return sendBizOk(reply, { pageData, totalCount: pageData.length }, cors);
     } catch (err) {
-      return sendError(reply, err, cors);
+      return sendBizError(reply, err, cors);
     }
   });
 
@@ -94,9 +174,9 @@ module.exports = fp(async (fastify, options) => {
       await requireLocalAdmin(fastify, request);
       const data = await link.register(request.body || {});
       await audit({ action: 'register', result: 'ok', statusCode: 200, platformOrigin: data.platformOrigin, ip: request.ip });
-      return sendJson(reply, { data, cors });
+      return sendBizOk(reply, data, cors);
     } catch (err) {
-      return sendError(reply, err, cors);
+      return sendBizError(reply, err, cors);
     }
   });
 
@@ -131,9 +211,9 @@ module.exports = fp(async (fastify, options) => {
   fastify.post('/app-ops/link/unlink', async (request, reply) => {
     try {
       await requireLocalAdmin(fastify, request);
-      return sendJson(reply, { data: await link.unlink(request.body?.platformOrigin), cors });
+      return sendBizOk(reply, await link.unlink(request.body?.platformOrigin), cors);
     } catch (err) {
-      return sendError(reply, err, cors);
+      return sendBizError(reply, err, cors);
     }
   });
 
@@ -146,9 +226,9 @@ module.exports = fp(async (fastify, options) => {
         limit: Number(request.query?.limit) || 50,
         offset: Number(request.query?.offset) || 0
       });
-      return sendJson(reply, { data, cors });
+      return sendBizOk(reply, data, cors);
     } catch (err) {
-      return sendError(reply, err, cors);
+      return sendBizError(reply, err, cors);
     }
   });
 
@@ -164,8 +244,8 @@ module.exports = fp(async (fastify, options) => {
   // —— 日志 ——
   fastify.get(
     '/app-ops/logs',
-    withOps('app-ops:logs:read', async request => {
-      await audit({ action: 'logs', result: 'ok', statusCode: 200, ip: request.ip });
+    withOps('app-ops:logs:read', async (request, reply, payload) => {
+      await auditOps(request, payload, { action: 'logs', result: 'ok', statusCode: 200 });
       return logs.read(request.query || {});
     })
   );
@@ -175,26 +255,22 @@ module.exports = fp(async (fastify, options) => {
   );
   // SSE 不能走 withOps 的 JSON 封装
   fastify.get('/app-ops/logs/stream', async (request, reply) => {
+    let payload;
     try {
-      const payload = await requireOpsScope(fastify, request, 'app-ops:logs:read');
+      payload = await requireOpsScope(fastify, request, 'app-ops:logs:read');
       limiter.check(clientKeyFromRequest(request, payload));
-      await audit({
+      await auditOps(request, payload, {
         action: 'logs.stream',
         result: 'ok',
-        statusCode: 200,
-        ip: request.ip,
-        userAgent: request.headers['user-agent'],
-        actor: payload?.sub || payload?.client_id || null
+        statusCode: 200
       }).catch(() => {});
       await logs.stream(request, reply, request.query || {});
     } catch (err) {
-      await audit({
+      await auditOps(request, payload, {
         action: 'logs.stream',
         result: 'error',
         statusCode: err.statusCode || 500,
-        detail: err.message,
-        ip: request.ip,
-        userAgent: request.headers['user-agent']
+        detail: err.message
       }).catch(() => {});
       if (reply.sent || reply.raw.headersSent) {
         return;
@@ -220,22 +296,32 @@ module.exports = fp(async (fastify, options) => {
   );
   fastify.post(
     '/app-ops/db/query',
-    withOps('app-ops:db:read', async request => {
-      await audit({ action: 'db.query', result: 'ok', statusCode: 200, ip: request.ip });
+    withOps('app-ops:db:read', async (request, reply, payload) => {
+      await auditOps(request, payload, { action: 'db.query', result: 'ok', statusCode: 200 });
       return db.runQuery(fastify, options, request.body || {});
     })
   );
   fastify.post(
     '/app-ops/db/row/save',
-    withOps('app-ops:db:write', async request => {
-      await audit({ action: 'db.write', result: 'ok', statusCode: 200, detail: request.body?.table, ip: request.ip });
+    withOps('app-ops:db:write', async (request, reply, payload) => {
+      await auditOps(request, payload, {
+        action: 'db.write',
+        result: 'ok',
+        statusCode: 200,
+        detail: request.body?.table
+      });
       return db.saveRow(fastify, options, request.body || {});
     })
   );
   fastify.post(
     '/app-ops/db/row/remove',
-    withOps('app-ops:db:write', async request => {
-      await audit({ action: 'db.write', result: 'ok', statusCode: 200, detail: `remove:${request.body?.table}`, ip: request.ip });
+    withOps('app-ops:db:write', async (request, reply, payload) => {
+      await auditOps(request, payload, {
+        action: 'db.write',
+        result: 'ok',
+        statusCode: 200,
+        detail: `remove:${request.body?.table}`
+      });
       return db.removeRow(fastify, options, request.body || {});
     })
   );
@@ -251,13 +337,12 @@ module.exports = fp(async (fastify, options) => {
   );
   fastify.post(
     '/app-ops/migrations/action',
-    withOps('app-ops:migrations:execute', async request => {
-      await audit({
+    withOps('app-ops:migrations:execute', async (request, reply, payload) => {
+      await auditOps(request, payload, {
         action: `migrations.${request.body?.action}`,
         result: 'ok',
         statusCode: 200,
-        detail: request.body?.file,
-        ip: request.ip
+        detail: request.body?.file
       });
       return migrations.runAction(fastify, options, request.body || {});
     })

@@ -39,6 +39,30 @@ const createLinkService = ({ store, options, fastify }) => {
   const verifier = createPlatformAssertionVerifier({ clockTolerance: 5 });
   const getBaseUrl = () => (options.origin || fastify.config?.ORIGIN || '').replace(/\/+$/, '');
 
+  /** 宿主服务端可达的 API 根；本地 ORIGIN 常为前端端口，需与 PORT 区分 */
+  const getApiBaseUrl = () => {
+    const explicit = options.apiOrigin || fastify.config?.APP_OPS_API_BASE_URL || process.env.APP_OPS_API_BASE_URL;
+    if (explicit) {
+      return String(explicit).replace(/\/+$/, '');
+    }
+    const base = getBaseUrl();
+    const port = fastify.config?.PORT || process.env.PORT;
+    if (!base || !port) {
+      return base;
+    }
+    try {
+      const u = new URL(base);
+      const defaultPort = u.protocol === 'https:' ? '443' : '80';
+      const originPort = u.port || defaultPort;
+      if ((u.hostname === 'localhost' || u.hostname === '127.0.0.1') && String(originPort) !== String(port)) {
+        return `${u.protocol}//${u.hostname}:${port}`;
+      }
+    } catch (e) {
+      // ignore
+    }
+    return base;
+  };
+
   const register = async ({ platformOrigin, platformName, remark } = {}) => {
     const origin = String(platformOrigin || '').replace(/\/+$/, '');
     if (!origin) {
@@ -83,6 +107,7 @@ const createLinkService = ({ store, options, fastify }) => {
       installKey: encodeInstallKey({
         v: 1,
         baseUrl,
+        apiBaseUrl: getApiBaseUrl(),
         appName,
         appLabel: packageJson.description || appName,
         installId,
@@ -153,7 +178,8 @@ const createLinkService = ({ store, options, fastify }) => {
       await fail('key 已过期');
     }
     if (row.secretHash !== store.hashSecret(installSecret)) {
-      await fail('installSecret 无效', 401);
+      // 旧实现曾在 redeem 成功后立即轮换 secret，主平台若随后 ensureOidc/activate 失败会导致「密钥无效」且无法重试
+      await fail('installSecret 无效或已失效，请在远程「平台注册」重新生成 installKey', 401);
     }
 
     let payload;
@@ -171,10 +197,10 @@ const createLinkService = ({ store, options, fastify }) => {
     }
     await store.addJti(payload.jti, Math.max(1000, (payload.exp || 0) * 1000 - Date.now() + 5000));
     await store.clearRedeemFailure(installId);
+    // 不在 redeem 时轮换 secret：activate 成功后再作废；主平台中途失败时可带同一 key 重试
     await store.upsertPlatform(
       Object.assign({}, row, {
-        status: 'pending_activate',
-        secretHash: store.hashSecret(crypto.randomBytes(16).toString('hex'))
+        status: 'pending_activate'
       })
     );
 
@@ -254,6 +280,8 @@ const createLinkService = ({ store, options, fastify }) => {
     const next = Object.assign({}, matched, {
       status: 'paired',
       pairedAt: new Date().toISOString(),
+      // activate 成功后再作废 installSecret，防止半成品占用导致无法重试
+      secretHash: store.hashSecret(crypto.randomBytes(16).toString('hex')),
       audience: audience || matched.audience,
       spaClientId: clientId || matched.spaClientId,
       serviceClientId: serviceClientId || matched.serviceClientId,

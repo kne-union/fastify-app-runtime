@@ -351,12 +351,35 @@ describe('@kne/fastify-app-runtime', function () {
         expect(res.json().paths).to.have.property('/api/biz');
       });
 
+      it('should accept host-platform client_token claim name mismatch', async () => {
+        const hostClaim = 'https://host.example/client_token';
+        tokens['service-host-claim'] = { [hostClaim]: true, client_id: 'app-center-docs', sub: 'app-center-docs', scope: 'open-api:read' };
+        fastify = await createOidcApp();
+        const res = await fastify.inject({
+          method: 'GET',
+          url: '/open-api.json',
+          headers: { authorization: 'Bearer service-host-claim' }
+        });
+        expect(res.statusCode).to.equal(200);
+      });
+
       it('should accept a user token and reject a client token without scope', async () => {
         fastify = await createOidcApp();
-        for (const token of ['service-no-scope', 'invalid']) {
-          const res = await fastify.inject({ method: 'GET', url: '/open-api.json', headers: { authorization: `Bearer ${token}` } });
-          expect(res.statusCode, token).to.equal(401);
-        }
+        // 缺 scope 的 client 令牌：403，且不得误入 account.user（避免 bigint: "app-center-docs"）
+        tokens['service-no-scope'] = {
+          [clientTokenClaim]: true,
+          client_id: 'app-center-docs',
+          sub: 'app-center-docs',
+          scope: 'user:read'
+        };
+        const noScope = await fastify.inject({
+          method: 'GET',
+          url: '/open-api.json',
+          headers: { authorization: 'Bearer service-no-scope' }
+        });
+        expect(noScope.statusCode).to.equal(403);
+        const invalid = await fastify.inject({ method: 'GET', url: '/open-api.json', headers: { authorization: 'Bearer invalid' } });
+        expect(invalid.statusCode).to.equal(401);
         const user = await fastify.inject({ method: 'GET', url: '/open-api.json', headers: { authorization: 'Bearer user' } });
         expect(user.statusCode).to.equal(200);
       });
@@ -385,17 +408,22 @@ describe('@kne/fastify-app-runtime', function () {
       'static/js/main.js': 'console.log(1);'
     };
 
+    const expectHtmlWithEmbed = (body, html) => {
+      expect(body).to.contain(html);
+      expect(body).to.contain('id="kne-pwa-document-embed"');
+    };
+
     it('should serve entry html, static files and SPA fallback', async () => {
       fastify = await createApp({ options: { root: createBuildDir(files) } });
       const index = await fastify.inject({ method: 'GET', url: '/' });
       expect(index.statusCode).to.equal(200);
-      expect(index.body).to.equal('<html>local</html>');
+      expectHtmlWithEmbed(index.body, '<html>local</html>');
       const asset = await fastify.inject({ method: 'GET', url: '/static/js/main.js' });
       expect(asset.body).to.equal('console.log(1);');
       const route = await fastify.inject({ method: 'GET', url: '/jobs/detail?id=1' });
       expect(route.statusCode).to.equal(200);
       expect(route.headers['content-type']).to.contain('text/html');
-      expect(route.body).to.equal('<html>local</html>');
+      expectHtmlWithEmbed(route.body, '<html>local</html>');
       const post = await fastify.inject({ method: 'POST', url: '/not-exists' });
       expect(post.statusCode).to.equal(404);
     });
@@ -403,9 +431,9 @@ describe('@kne/fastify-app-runtime', function () {
     it('should use entry of current env', async () => {
       fastify = await createApp({ options: { root: createBuildDir(files), env: 'prod' } });
       const index = await fastify.inject({ method: 'GET', url: '/' });
-      expect(index.body).to.equal('<html>prod</html>');
+      expectHtmlWithEmbed(index.body, '<html>prod</html>');
       const route = await fastify.inject({ method: 'GET', url: '/any/page' });
-      expect(route.body).to.equal('<html>prod</html>');
+      expectHtmlWithEmbed(route.body, '<html>prod</html>');
     });
 
     it('should not serve frontend when static is false', async () => {
@@ -441,7 +469,8 @@ describe('@kne/fastify-app-runtime', function () {
       expect(manifest.statusCode).to.equal(200);
       expect(manifest.headers['content-type']).to.contain('application/json');
       const page = await fastify.inject({ method: 'GET', url: '/apps' });
-      expect(page.body).to.equal(html);
+      expect(page.body).to.contain(html.replace('</body></html>', ''));
+      expect(page.body).to.contain('id="kne-pwa-document-embed"');
     });
 
     it('should serve manifestFiles as application/manifest+json and fall back when missing', async () => {
@@ -456,7 +485,8 @@ describe('@kne/fastify-app-runtime', function () {
       expect(manifest.json()).to.deep.equal({ name: 'demo' });
       const missing = await fastify.inject({ method: 'GET', url: '/manifest-apps.json' });
       expect(missing.statusCode).to.equal(200);
-      expect(missing.body).to.equal('<html>local</html>');
+      expect(missing.body).to.contain('<html>local</html>');
+      expect(missing.body).to.contain('id="kne-pwa-document-embed"');
     });
 
     it('should inject pwa tags into entry html for matched pwa entries', async () => {
@@ -473,8 +503,10 @@ describe('@kne/fastify-app-runtime', function () {
       expect(apps.body).to.contain('href="/manifest-apps.json"');
       expect(apps.body).to.contain('content="应用中心"');
       expect(apps.body).to.contain('<script>var a = 1;</script>');
+      expect(apps.body).to.contain('id="kne-pwa-document-embed"');
       const other = await fastify.inject({ method: 'GET', url: '/admin' });
-      expect(other.body).to.equal(html);
+      expect(other.body).to.contain('<script>var a = 1;</script>');
+      expect(other.body).to.contain('id="kne-pwa-document-embed"');
     });
   });
 
