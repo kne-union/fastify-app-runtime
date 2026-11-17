@@ -10,6 +10,7 @@ const db = require('./db');
 const migrations = require('./migrations');
 const { createLinkService } = require('./link');
 const { getPermissions } = require('./permissions');
+const { createRateLimiter, clientKeyFromRequest } = require('./rate-limit');
 
 const sendError = (reply, err, cors) => {
   const statusCode = err.statusCode || 500;
@@ -47,10 +48,19 @@ module.exports = fp(async (fastify, options) => {
 
   const link = createLinkService({ store, options, fastify });
   const audit = async entry => store.appendAccessLog(entry);
+  const limiter = createRateLimiter({
+    windowMs: Number(options.appOps?.rateLimitWindowMs || config.APP_OPS_RATE_LIMIT_WINDOW_MS || 60 * 1000),
+    max: Number(options.appOps?.rateLimitMax || config.APP_OPS_RATE_LIMIT_MAX || 60)
+  });
+  const redeemLimiter = createRateLimiter({
+    windowMs: Number(options.appOps?.redeemRateLimitWindowMs || 15 * 60 * 1000),
+    max: Number(options.appOps?.redeemRateLimitMax || 20)
+  });
 
   const withOps = (scope, handler) => async (request, reply) => {
     try {
       const payload = await requireOpsScope(fastify, request, scope);
+      limiter.check(clientKeyFromRequest(request, payload));
       const data = await handler(request, reply, payload);
       if (reply.sent) {
         return;
@@ -92,6 +102,7 @@ module.exports = fp(async (fastify, options) => {
 
   fastify.post('/app-ops/link/redeem', async (request, reply) => {
     try {
+      redeemLimiter.check(`redeem:${request.ip || 'unknown'}:${(request.body || {}).installId || ''}`);
       const data = await link.redeem(request.body || {}, meta(request));
       return sendJson(reply, { data, cors });
     } catch (err) {

@@ -95,6 +95,15 @@ const createLinkService = ({ store, options, fastify }) => {
 
   const listPlatforms = async () => {
     const platforms = await store.getPlatforms();
+    const logs = await store.listAccessLogs({ limit: 500, offset: 0 });
+    const lastByOrigin = new Map();
+    // accessLogs 新记录在前
+    for (const row of logs.pageData || []) {
+      if (!row?.platformOrigin || lastByOrigin.has(row.platformOrigin)) {
+        continue;
+      }
+      lastByOrigin.set(row.platformOrigin, row.at || null);
+    }
     return platforms.map(p => ({
       platformOrigin: p.platformOrigin,
       platformName: p.platformName,
@@ -102,7 +111,8 @@ const createLinkService = ({ store, options, fastify }) => {
       status: p.status,
       expiresAt: p.expiresAt || null,
       pairedAt: p.pairedAt || null,
-      remark: p.remark || ''
+      remark: p.remark || '',
+      lastAccessAt: lastByOrigin.get(p.platformOrigin) || null
     }));
   };
 
