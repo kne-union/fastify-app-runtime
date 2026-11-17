@@ -4,9 +4,29 @@ const { QueryTypes } = require('sequelize');
 
 const SQL_NAME_RE = /^[A-Za-z0-9_.-]+\.sql$/;
 
+/**
+ * 解析 SQL 目录：进程 cwd 可能是仓库根或 server/。
+ * - 显式 APP_OPS_SQL_PATH / appOps.sqlPath 优先
+ * - 否则依次尝试 cwd/sql（cwd=server）与 cwd/server/sql（cwd=仓库根）
+ */
 const resolveSqlDir = (options, config = {}) => {
-  const rel = config.APP_OPS_SQL_PATH || process.env.APP_OPS_SQL_PATH || options.appOps?.sqlPath || 'server/sql';
-  return path.resolve(process.cwd(), rel);
+  const configured = config.APP_OPS_SQL_PATH || process.env.APP_OPS_SQL_PATH || options.appOps?.sqlPath;
+  const candidates = [];
+  if (configured) {
+    candidates.push(path.isAbsolute(configured) ? configured : path.resolve(process.cwd(), configured));
+  }
+  candidates.push(path.resolve(process.cwd(), 'sql'));
+  candidates.push(path.resolve(process.cwd(), 'server/sql'));
+  for (const dir of candidates) {
+    try {
+      if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) {
+        return dir;
+      }
+    } catch (e) {
+      // try next
+    }
+  }
+  return candidates[0] || path.resolve(process.cwd(), 'sql');
 };
 
 const assertSafeFile = file => {

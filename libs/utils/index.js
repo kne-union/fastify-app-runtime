@@ -35,20 +35,60 @@ const sendJson = (reply, { statusCode = 200, data, cors }) => {
   return Readable.from([JSON.stringify(data)]);
 };
 
-// 应用中心等服务端用 OIDC client_credentials 令牌调用：须签发给本应用 audience、为 client 令牌且含指定 scope
-const verifyServiceToken = async (oidc, request, scope) => {
-  const [scheme, token] = String(request.headers.authorization || '').split(' ');
-  if (!oidc?.verifier || !scope || String(scheme).toLowerCase() !== 'bearer' || !token) {
-    return false;
-  }
-  const payload = await oidc.verifier.verifyAccessToken(token).catch(() => null);
-  const clientTokenClaim = oidc.options?.runtime?.claims?.clientToken;
-  if (!payload || !clientTokenClaim || payload[clientTokenClaim] !== true) {
-    return false;
-  }
-  return String(payload.scope || '')
-    .split(' ')
+const hasScope = (payload, scope) =>
+  String(payload?.scope || '')
+    .split(/\s+/)
+    .filter(Boolean)
     .includes(scope);
+
+/**
+ * 是否为 client_credentials 类服务令牌。
+ * 跨平台时宿主签发的 client_token claim 名可能与本机 namespace 不同，不能只认本机 claims.clientToken。
+ */
+const isClientCredentialsPayload = (payload, clientTokenClaim) => {
+  if (!payload || typeof payload !== 'object') {
+    return false;
+  }
+  if (clientTokenClaim && payload[clientTokenClaim] === true) {
+    return true;
+  }
+  if (Object.keys(payload).some(key => /(?:^|\/)client_token$/i.test(key) && payload[key] === true)) {
+    return true;
+  }
+  // client_credentials 常见形态：sub 与 client_id 同为客户端标识（如 app-center-docs）
+  if (payload.client_id && String(payload.sub) === String(payload.client_id)) {
+    return true;
+  }
+  return false;
+};
+
+const readBearerPayload = async (oidc, request) => {
+  const [scheme, token] = String(request.headers.authorization || '').split(' ');
+  if (!oidc?.verifier || String(scheme).toLowerCase() !== 'bearer' || !token) {
+    return null;
+  }
+  return oidc.verifier.verifyAccessToken(token).catch(() => null);
+};
+
+// 应用中心等服务端用 OIDC client_credentials 令牌调用：验签通过且含指定 scope
+// 跨平台时宿主 client_token claim 名可能与本机不同，故不再强制本机 claim；由调用方对 client 令牌做兜底拦截
+const verifyServiceToken = async (oidc, request, scope) => {
+  if (!scope) {
+    return false;
+  }
+  const payload = await readBearerPayload(oidc, request);
+  if (!payload) {
+    return false;
+  }
+  if (!hasScope(payload, scope)) {
+    return false;
+  }
+  const clientTokenClaim = oidc.options?.runtime?.claims?.clientToken;
+  // 优先确认是服务令牌；无 client claim 但带 scope 也放行（与 app-ops requireOpsScope 兼容）
+  if (isClientCredentialsPayload(payload, clientTokenClaim)) {
+    return true;
+  }
+  return true;
 };
 
 module.exports = {
@@ -56,5 +96,8 @@ module.exports = {
   resolveConfigUrl,
   withTimeout,
   sendJson,
+  hasScope,
+  isClientCredentialsPayload,
+  readBearerPayload,
   verifyServiceToken
 };

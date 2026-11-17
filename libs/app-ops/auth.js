@@ -62,8 +62,34 @@ const requireAnyOpsScope = async (fastify, request, scopes = []) => {
   throw lastErr || Object.assign(new Error('缺少运维 scope'), { statusCode: 403 });
 };
 
-/** 本地 break-glass：优先 account.authenticate.admin，否则 user */
+/**
+ * 本地 break-glass：须先 user 再 admin（与业务控制器 onRequest 链一致）。
+ * account.authenticate.admin 依赖 request.userInfo；只调 admin 会在 userInfo 为空时读 id 崩成 500。
+ * 有 fastify-oidc 时优先走 oidc.authenticate.user/admin（统一 Bearer / PKCE）。
+ */
 const requireLocalAdmin = async (fastify, request) => {
+  const wrap = async fn => {
+    try {
+      await fn(request);
+    } catch (e) {
+      if (e && typeof e.statusCode === 'number') {
+        throw e;
+      }
+      const statusCode = e?.statusCode || e?.status || 401;
+      const err = new Error(e?.message || '未登录或无管理员权限');
+      err.statusCode = statusCode >= 400 ? statusCode : 401;
+      throw err;
+    }
+  };
+
+  if (fastify.oidc?.authenticate?.user) {
+    await wrap(fastify.oidc.authenticate.user);
+    if (fastify.oidc.authenticate.admin) {
+      await wrap(fastify.oidc.authenticate.admin);
+    }
+    return request.userInfo || request.user;
+  }
+
   const account = fastify.account;
   if (!account?.authenticate) {
     const err = new Error('未配置本地账号认证，无法管理平台登记');
@@ -71,12 +97,14 @@ const requireLocalAdmin = async (fastify, request) => {
     throw err;
   }
   const { admin, user } = account.authenticate;
+  if (user) {
+    await wrap(user);
+  }
   if (admin) {
-    await admin(request);
+    await wrap(admin);
     return request.userInfo || request.user;
   }
   if (user) {
-    await user(request);
     return request.userInfo || request.user;
   }
   const err = new Error('未配置本地管理员认证');

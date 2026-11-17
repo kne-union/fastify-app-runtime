@@ -78,13 +78,29 @@ const listTables = async (fastify, options) => {
     } catch (e) {
       columns = [];
     }
+    // 字段名与 app-manager describeTableSafe / DataOps 对齐：用 table 而非 name
     pageData.push({
-      name: table,
+      table,
       columns,
       primaryKey: columns.filter(c => c.primaryKey).map(c => c.name)
     });
   }
-  return { pageData, totalCount: pageData.length };
+  const config = fastify.config || {};
+  return {
+    pageData,
+    totalCount: pageData.length,
+    // 供主平台 DataOps 区分：远程进程自有库，宿主不可改连接
+    dbScope: 'remote',
+    readOnly: true,
+    softDeleteField: 'deleted_at',
+    connection: {
+      dialect: config.DB_DIALECT || sequelize.getDialect?.() || null,
+      host: config.DB_HOST || null,
+      port: config.DB_PORT || null,
+      database: config.DB_DATABASE || config.DB_STORAGE || null,
+      hasCustomDb: false
+    }
+  };
 };
 
 const listRows = async (fastify, options, { table, filter, keyword, sort, perPage = 20, currentPage = 1 } = {}) => {

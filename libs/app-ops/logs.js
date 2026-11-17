@@ -32,64 +32,70 @@ const shouldTee = (options, config = {}) => {
   return true;
 };
 
-const formatLine = (message, timeZone) => {
-  const d = new Date();
-  let stamp;
-  try {
-    stamp = new Intl.DateTimeFormat('sv-SE', {
-      timeZone: timeZone || process.env.APP_OPS_LOG_TIMEZONE || 'Asia/Shanghai',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false
-    })
-      .format(d)
-      .replace(' ', 'T');
-  } catch (e) {
-    stamp = d.toISOString().slice(0, 19);
+/** pino 使用 Symbol('pino.stream')（非 Symbol.for），须从 pino/lib/symbols 取 */
+const resolvePinoStream = logger => {
+  if (!logger) {
+    return null;
   }
-  const text = typeof message === 'string' ? message : String(message);
-  return `${stamp}: ${text.replace(/\n+$/, '')}\n`;
+  try {
+    const { streamSym } = require('pino/lib/symbols');
+    if (streamSym && logger[streamSym]) {
+      return logger[streamSym];
+    }
+  } catch (e) {
+    /* ignore */
+  }
+  for (const key of Reflect.ownKeys(logger)) {
+    if (typeof key === 'symbol' && String(key) === 'Symbol(pino.stream)') {
+      return logger[key];
+    }
+  }
+  return null;
 };
 
-const installTee = ({ outPath, errPath, timeZone }) => {
-  const append = (file, chunk) => {
-    fs.appendFile(file, chunk, () => {});
-  };
-  const wrapConsole = (method, file) => {
-    const original = console[method].bind(console);
-    console[method] = (...args) => {
-      original(...args);
-      try {
-        append(file, formatLine(args.map(a => (typeof a === 'string' ? a : require('node:util').inspect(a))).join(' '), timeZone));
-      } catch (e) {
-        /* ignore */
+/** level >= 50（error）进 err.log，其余进 out.log */
+const pickLogFile = (text, outPath, errPath) => {
+  try {
+    const first = String(text).trim().split('\n').find(Boolean);
+    if (first && first.charAt(0) === '{') {
+      const level = JSON.parse(first).level;
+      if (Number(level) >= 50) {
+        return errPath;
       }
-    };
-  };
-  wrapConsole('log', outPath);
-  wrapConsole('info', outPath);
-  wrapConsole('debug', outPath);
-  wrapConsole('warn', outPath);
-  wrapConsole('error', errPath);
+    }
+  } catch (e) {
+    /* ignore */
+  }
+  return outPath;
+};
 
-  const teeStream = (stream, file) => {
-    const originalWrite = stream.write.bind(stream);
-    stream.write = (chunk, encoding, cb) => {
-      try {
-        const text = Buffer.isBuffer(chunk) ? chunk.toString(encoding || 'utf8') : String(chunk);
-        append(file, formatLine(text, timeZone));
-      } catch (e) {
-        /* ignore */
-      }
-      return originalWrite(chunk, encoding, cb);
-    };
+/**
+ * 落盘 fastify/pino 请求日志（与终端里的 JSON 行一致）。
+ * pino 经 sonic-boom 写 fd，hook process.stdout.write 捕不到，须 tee pino.stream。
+ */
+const installPinoFileTee = (fastify, { outPath, errPath }) => {
+  const stream = resolvePinoStream(fastify && fastify.log);
+  if (!stream || typeof stream.write !== 'function') {
+    return false;
+  }
+  if (stream.__appOpsPinoTee) {
+    return true;
+  }
+  const originalWrite = stream.write.bind(stream);
+  stream.write = (chunk, encoding, cb) => {
+    try {
+      const enc = typeof encoding === 'string' ? encoding : 'utf8';
+      const text = Buffer.isBuffer(chunk) ? chunk.toString(enc) : String(chunk);
+      const file = pickLogFile(text, outPath, errPath);
+      const payload = text.endsWith('\n') ? text : `${text}\n`;
+      fs.appendFile(file, payload, () => {});
+    } catch (e) {
+      /* ignore */
+    }
+    return originalWrite(chunk, encoding, cb);
   };
-  teeStream(process.stdout, outPath);
-  teeStream(process.stderr, errPath);
+  stream.__appOpsPinoTee = true;
+  return true;
 };
 
 const readLinesReverse = async (filePath, { perPage = 100, beforeLine = null } = {}) => {
@@ -197,11 +203,13 @@ const createLogsRuntime = (fastify, options) => {
     }
     await ensureDir(paths.logsDir);
     if (shouldTee(options, config)) {
-      installTee({
+      const ok = installPinoFileTee(fastify, {
         outPath: paths.outPath,
-        errPath: paths.errPath,
-        timeZone: process.env.APP_OPS_LOG_TIMEZONE || 'Asia/Shanghai'
+        errPath: paths.errPath
       });
+      if (!ok && typeof fastify.log?.warn === 'function') {
+        fastify.log.warn('app-ops: pino stream tee unavailable (need logger: true); request JSON will not be filed');
+      }
     }
     const intervalMs = Number(process.env.APP_OPS_LOG_ROTATE_INTERVAL_MS || 60000);
     rotateTimer = setInterval(() => {

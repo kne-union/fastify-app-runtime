@@ -56,12 +56,15 @@ const getEnvDeclaration = async (fastify, options) => {
   const { schema } = await loadSchema(options, config);
   const injectedKeys = ['AUTH_MODE', 'OIDC_ISSUER', 'OIDC_AUDIENCE', 'OIDC_CLIENT_ID', 'OIDC_SERVICE_CLIENT_ID', 'OIDC_SERVICE_CLIENT_SECRET', 'PORT', 'DB_TABLE_PREFIX'];
   const declared = [];
-  const seen = new Set();
+  const injected = new Set(injectedKeys);
 
   if (schema?.properties) {
     const required = new Set(schema.required || []);
     for (const [key, prop] of Object.entries(schema.properties)) {
-      seen.add(key);
+      // 系统注入项不在运维面板展示（与主平台 Env 页一致）
+      if (injected.has(key)) {
+        continue;
+      }
       const secret = isSecretKey(key, prop, config);
       const raw = readEnvValue(key, fastify);
       const configured = raw != null && String(raw) !== '';
@@ -79,31 +82,12 @@ const getEnvDeclaration = async (fastify, options) => {
     }
   }
 
-  const others = [];
-  for (const key of Object.keys(process.env)) {
-    if (seen.has(key) || key.startsWith('npm_') || key === 'PATH' || key === 'HOME') {
-      continue;
-    }
-    // 仅暴露看起来像应用配置的大写键，避免泄漏整机环境
-    if (!/^[A-Z][A-Z0-9_]*$/.test(key)) {
-      continue;
-    }
-    const secret = isSecretKey(key, {}, config);
-    const raw = process.env[key];
-    const configured = raw != null && String(raw) !== '';
-    others.push({
-      key,
-      secret,
-      configured,
-      value: secret ? (configured ? MASK : null) : configured ? raw : null
-    });
-  }
-
+  // 只返回 env.schema 声明项；不扫 process.env，避免泄漏内部/系统变量
   return {
     readOnly: true,
     hasSchema: !!schema,
     declared,
-    others: others.slice(0, 100),
+    others: [],
     injectedKeys
   };
 };

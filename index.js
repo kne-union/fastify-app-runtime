@@ -2,7 +2,7 @@ const fp = require('fastify-plugin');
 const path = require('node:path');
 const fs = require('node:fs');
 const pwaDocument = require('@kne/pwa-document');
-const { verifyServiceToken } = require('./libs/utils');
+const { verifyServiceToken, isClientCredentialsPayload, readBearerPayload } = require('./libs/utils');
 
 module.exports = fp(
   async (fastify, options) => {
@@ -64,6 +64,14 @@ module.exports = fp(
                 if (await verifyServiceToken(fastify.oidc, request, options.openApi.serviceScope)) {
                   return;
                 }
+                // client_credentials 令牌 sub 常为 client_id（如 app-center-docs），绝不能再走 account.user 查 bigint
+                const payload = await readBearerPayload(fastify.oidc, request);
+                const clientTokenClaim = fastify.oidc?.options?.runtime?.claims?.clientToken;
+                if (payload && isClientCredentialsPayload(payload, clientTokenClaim)) {
+                  const err = new Error(`缺少 scope：${options.openApi.serviceScope}`);
+                  err.statusCode = 403;
+                  throw err;
+                }
                 await user(request);
               }
             ];
@@ -119,18 +127,45 @@ module.exports = fp(
       });
     });
 
+    // 兼容尚未升级的 @kne/pwa-document（无 injectEmbedBridgeHtml 时原样返回）
+    const withEmbedBridge = html => (typeof pwaDocument.injectEmbedBridgeHtml === 'function' ? pwaDocument.injectEmbedBridgeHtml(html) : html);
+
+    // 静态入口与 SPA fallback 的 HTML 都注入 embed bridge，供应用中心「主页」iframe 前进/后退
+    fastify.addHook('onSend', async (request, reply, payload) => {
+      const contentType = reply.getHeader('content-type');
+      if (!contentType || !String(contentType).includes('text/html') || payload == null) {
+        return payload;
+      }
+      const toText = async raw => {
+        if (typeof raw === 'string') {
+          return raw;
+        }
+        if (Buffer.isBuffer(raw)) {
+          return raw.toString('utf8');
+        }
+        if (typeof raw.pipe === 'function' || typeof raw[Symbol.asyncIterator] === 'function') {
+          const chunks = [];
+          for await (const chunk of raw) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          }
+          return Buffer.concat(chunks).toString('utf8');
+        }
+        return null;
+      };
+      const text = await toText(payload);
+      return text == null ? payload : withEmbedBridge(text);
+    });
+
     if (staticOptions.fallback) {
       fastify.setNotFoundHandler(async (request, reply) => {
         const entryPath = getEntryPath();
         if ((request.method !== 'GET' && request.method !== 'HEAD') || !(await fs.promises.stat(entryPath).catch(() => null))) {
           return reply.code(404).send({ message: `Route ${request.method}:${request.url} not found` });
         }
-        const pwaEntry = pwaEntries.length ? pwaDocument.matchPwaEntry(request.url, pwaEntries) : null;
-        if (!pwaEntry) {
-          return reply.type('text/html; charset=utf-8').send(fs.createReadStream(entryPath));
-        }
         const html = await fs.promises.readFile(entryPath, 'utf8');
-        return reply.type('text/html; charset=utf-8').send(pwaDocument.applyPwaHtml(html, pwaEntry));
+        const pwaEntry = pwaEntries.length ? pwaDocument.matchPwaEntry(request.url, pwaEntries) : null;
+        const body = pwaEntry ? pwaDocument.applyPwaHtml(html, pwaEntry) : html;
+        return reply.type('text/html; charset=utf-8').send(withEmbedBridge(body));
       });
     }
   },
