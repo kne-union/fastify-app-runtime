@@ -242,7 +242,14 @@ const createLinkService = ({ store, options, fastify }) => {
     };
   };
 
-  const activate = async ({ assertion, issuer, audience, clientId, serviceClientId, serviceClientSecret }, requestMeta = {}) => {
+  // 新版 fastify-oidc 的 standalone 应用能服务已配对平台的租户：平台把租户变更通知推到这里
+  const getTenantSyncUri = () => {
+    const prefix = fastify.oidc?.platformContexts ? fastify.oidc.options?.prefix : null;
+    const apiBaseUrl = getApiBaseUrl();
+    return prefix && apiBaseUrl ? `${apiBaseUrl}${prefix}/tenant-sync` : null;
+  };
+
+  const activate = async ({ assertion, issuer, audience, clientId, serviceClientId, serviceClientSecret, appCode }, requestMeta = {}) => {
     let iss;
     try {
       iss = decodeJwt(assertion).iss;
@@ -291,7 +298,8 @@ const createLinkService = ({ store, options, fastify }) => {
         audience: audience || null,
         clientId: clientId || null,
         serviceClientId: serviceClientId || null,
-        serviceClientSecret: serviceClientSecret || null
+        serviceClientSecret: serviceClientSecret || null,
+        appCode: appCode || null
       }
     });
     await store.upsertPlatform(next);
@@ -304,6 +312,8 @@ const createLinkService = ({ store, options, fastify }) => {
         audience: audience || `${matched.platformOrigin}/app/${packageJson.name || 'app'}/api`,
         spaClientId: clientId,
         serviceClientId,
+        serviceClientSecret,
+        appCode,
         jwksUri: matched.jwksUri,
         status: 'paired',
         pairedAt: next.pairedAt
@@ -321,7 +331,7 @@ const createLinkService = ({ store, options, fastify }) => {
       userAgent: requestMeta.userAgent
     });
 
-    return { ok: true, status: 'paired' };
+    return { ok: true, status: 'paired', tenantSyncUri: getTenantSyncUri() };
   };
 
   const unlink = async platformOrigin => {
@@ -343,7 +353,7 @@ const createLinkService = ({ store, options, fastify }) => {
     if (issuer) {
       const key = String(issuer).replace(/\/+$/, '');
       const one = platforms.find(p => p.issuer === key || p.issuer === issuer);
-      return one ? { paired: one.status === 'paired', platformOrigin: one.platformOrigin, issuer: one.issuer, pairedAt: one.pairedAt } : { paired: false };
+      return one ? { paired: one.status === 'paired', platformOrigin: one.platformOrigin, issuer: one.issuer, pairedAt: one.pairedAt, tenantSyncUri: getTenantSyncUri() } : { paired: false };
     }
     return {
       platforms: platforms.map(p => ({

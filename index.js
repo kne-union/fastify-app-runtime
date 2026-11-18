@@ -32,6 +32,12 @@ module.exports = fp(
         timeout: 3000,
         openApi: {},
         /**
+         * 菜单 manifest（open-menus.json）：声明子应用要接入租户端左菜单的菜单。
+         * 来源优先级：manifest（对象或 async 函数）> file（默认 {cwd}/menus.json）；都没有则接口返回 404。
+         * 鉴权复用 openApi.getAuthenticate；openApi 为 false 或无鉴权时不注册。
+         */
+        menus: {},
+        /**
          * 远程管理（App Ops）。也可用环境变量 APP_OPS_ENABLED=true|1|yes|on 开启。
          * 未开启时不注册任何 /app-ops 路由。
          * @type {{ enabled?: boolean, capabilities?: object, getPermissions?: Function, dataDir?: string, entries?: array }|boolean|undefined}
@@ -47,6 +53,7 @@ module.exports = fp(
     } else {
       options.appOps = Object.assign({}, options.appOps);
     }
+    options.menus = options.menus === false ? false : Object.assign({ path: '/open-menus.json', file: path.resolve(process.cwd(), 'menus.json'), manifest: null }, options.menus);
     options.setting = Object.assign({ name: 'setting' }, options.setting);
     options.openApi =
       options.openApi &&

@@ -67,6 +67,8 @@ module.exports = fp(async (fastify, options) => {
           audience: p.audience || p.oidc?.audience,
           spaClientId: p.spaClientId || p.oidc?.clientId,
           serviceClientId: p.serviceClientId || p.oidc?.serviceClientId,
+          serviceClientSecret: p.oidc?.serviceClientSecret || (p.serviceClientSecretEnc ? Buffer.from(p.serviceClientSecretEnc, 'base64').toString() : null),
+          appCode: p.oidc?.appCode,
           jwksUri: p.jwksUri,
           status: 'paired',
           pairedAt: p.pairedAt
@@ -238,6 +240,18 @@ module.exports = fp(async (fastify, options) => {
     withOps('app-ops:permissions:read', async () => {
       const permissions = await getPermissions(fastify, options);
       return { permissions };
+    })
+  );
+
+  // —— 菜单（linked 应用接入租户端左菜单；未声明返回 404）——
+  fastify.get(
+    '/app-ops/menus',
+    withOps('app-ops:permissions:read', async () => {
+      const manifest = await fastify[options.name].services.getMenus();
+      if (!manifest) {
+        throw Object.assign(new Error('menus not declared'), { statusCode: 404 });
+      }
+      return manifest;
     })
   );
 
