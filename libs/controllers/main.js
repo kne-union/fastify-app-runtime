@@ -4,6 +4,7 @@ const { str, num, any, obj, response, success } = require('../schema/response');
 const TAG_RUNTIME = '应用运行时-运行信息';
 const TAG_HEALTH = '应用运行时-健康检查';
 const TAG_OPEN_API = '应用运行时-接口文档';
+const TAG_MENUS = '应用运行时-菜单';
 
 const readyResult = description =>
   response(description, {
@@ -114,6 +115,28 @@ module.exports = fp(async (fastify, options) => {
   if (!authenticate || authenticate.length === 0) {
     return;
   }
+  if (options.menus) {
+    fastify.get(
+      options.menus.path,
+      {
+        onRequest: authenticate,
+        schema: {
+          tags: [TAG_MENUS],
+          summary: '菜单 manifest',
+          description: '子应用声明要接入租户端左菜单的菜单（integration、remote、menus），应用中心在部署与同步时拉取；未声明返回 404。鉴权同 open-api.json',
+          response: Object.assign(success('菜单 manifest 原文'), { 404: response('没有声明菜单', { properties: { message: str('错误信息') } }) })
+        }
+      },
+      async (request, reply) => {
+        const manifest = await services.getMenus();
+        if (!manifest) {
+          return utils.sendJson(reply, { statusCode: 404, data: { message: 'menus not declared' }, cors });
+        }
+        return utils.sendJson(reply, { data: manifest, cors });
+      }
+    );
+  }
+
   if (typeof fastify.swagger !== 'function') {
     fastify.log.warn('app-runtime: open-api disabled, register @fastify/swagger before other routes to enable it');
     return;

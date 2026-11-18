@@ -76,7 +76,27 @@ module.exports = fp(async (fastify, options) => {
     };
   };
 
+  /** 读取子应用声明的菜单 manifest，未声明返回 null；文件内容非法 JSON 时抛错 */
+  const getMenus = async () => {
+    const menus = options.menus;
+    if (!menus) {
+      return null;
+    }
+    if (menus.manifest) {
+      return typeof menus.manifest === 'function' ? menus.manifest({ fastify }) : menus.manifest;
+    }
+    try {
+      return JSON.parse(await fs.promises.readFile(menus.file, 'utf8'));
+    } catch (e) {
+      if (e.code === 'ENOENT') {
+        return null;
+      }
+      throw e;
+    }
+  };
+
   Object.assign(fastify[options.name].services, {
+    getMenus,
     getEnv,
     getOrigin,
     getEntry,

@@ -544,8 +544,61 @@ describe('@kne/fastify-app-runtime', function () {
         checkProps(`${name} query`, schema.querystring || schema.query);
         checkProps(`${name} params`, schema.params);
       });
-      expect(ownRoutes.map(route => route.url).sort()).to.deep.equal(['/app-config.json', '/health', '/manifest.json', '/open-api.json', '/ready', '/remote-module-config.json']);
+      expect(ownRoutes.map(route => route.url).sort()).to.deep.equal(['/app-config.json', '/health', '/manifest.json', '/open-api.json', '/open-menus.json', '/ready', '/remote-module-config.json']);
       expect(missing).to.deep.equal([]);
+    });
+  });
+
+  describe('菜单 manifest 测试', () => {
+    const mockAccount = app => {
+      app.decorate('account', {
+        authenticate: {
+          user: async request => {
+            const token = String(request.headers.authorization || '').replace(/^Bearer\s+/i, '');
+            if (!token) {
+              throw Object.assign(new Error('未登录'), { statusCode: 401 });
+            }
+            request.userInfo = { id: 'u1' };
+          },
+          admin: async () => {}
+        }
+      });
+    };
+    const manifest = { integration: 'remote', remote: { name: 'demo' }, menus: [{ key: 'home', label: '首页', component: 'Home' }] };
+    const menusFile = content => path.join(createBuildDir({ 'menus.json': content }), 'menus.json');
+
+    it('should return manifest from menus.json file', async () => {
+      fastify = await createApp({ options: { root: createBuildDir({}), menus: { file: menusFile(manifest) } }, beforeRegister: mockAccount });
+      const res = await fastify.inject({ method: 'GET', url: '/open-menus.json', headers: { authorization: 'Bearer user' } });
+      expect(res.statusCode).to.equal(200);
+      expect(res.json()).to.deep.equal(manifest);
+    });
+
+    it('should prefer menus.manifest option, object or function', async () => {
+      fastify = await createApp({
+        options: { root: createBuildDir({}), menus: { file: menusFile({ menus: [] }), manifest: () => manifest } },
+        beforeRegister: mockAccount
+      });
+      const res = await fastify.inject({ method: 'GET', url: '/open-menus.json', headers: { authorization: 'Bearer user' } });
+      expect(res.json()).to.deep.equal(manifest);
+    });
+
+    it('should return 404 when menus are not declared', async () => {
+      fastify = await createApp({ options: { root: createBuildDir({}), menus: { file: path.join(os.tmpdir(), 'no-such-menus.json') } }, beforeRegister: mockAccount });
+      const res = await fastify.inject({ method: 'GET', url: '/open-menus.json', headers: { authorization: 'Bearer user' } });
+      expect(res.statusCode).to.equal(404);
+    });
+
+    it('should reject anonymous request', async () => {
+      fastify = await createApp({ options: { root: createBuildDir({}), menus: { file: menusFile(manifest) } }, beforeRegister: mockAccount });
+      const res = await fastify.inject({ method: 'GET', url: '/open-menus.json' });
+      expect(res.statusCode).to.equal(401);
+    });
+
+    it('should not register route when menus is false', async () => {
+      fastify = await createApp({ options: { root: createBuildDir({}), static: false, menus: false }, beforeRegister: mockAccount });
+      const res = await fastify.inject({ method: 'GET', url: '/open-menus.json', headers: { authorization: 'Bearer user' } });
+      expect(res.statusCode).to.equal(404);
     });
   });
 });

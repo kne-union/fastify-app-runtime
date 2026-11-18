@@ -146,6 +146,10 @@ fastify.register(require('@kne/fastify-app-runtime'), {
 | openApi.path | string | 否 | `/open-api.json` | 文档接口路径 |
 | openApi.serviceScope | string | 否 | `open-api:read` | 默认鉴权中放行的 OIDC 服务令牌 scope |
 | openApi.getAuthenticate | function | 否 | OIDC 服务令牌，或 `fastify.account` 的 user + admin | 返回 `onRequest` 鉴权数组；返回空值或空数组时不注册接口 |
+| menus | object / boolean | 否 | `{}` | 菜单 manifest 接口配置，`false` 不注册；鉴权复用 `openApi.getAuthenticate`（`openApi` 为 `false` 或无鉴权时不注册） |
+| menus.path | string | 否 | `/open-menus.json` | 菜单接口路径 |
+| menus.file | string | 否 | `{cwd}/menus.json` | manifest 文件（即 `server/menus.json`），不存在则接口返回 404 |
+| menus.manifest | object / function | 否 | `null` | 直接提供 manifest，或 `({ fastify }) => manifest`；优先于 `file` |
 
 默认 `getEntry`：
 
@@ -256,6 +260,28 @@ fastify.register(require('@kne/fastify-app-runtime'), {
   }
 }
 ```
+
+
+##### GET /open-menus.json
+
+子应用声明要接入租户端左菜单的菜单。应用中心在应用就绪与 linked 同步时拉取并保存快照，未声明返回 404。鉴权同 `/open-api.json`（OIDC 服务令牌 scope 含 `openApi.serviceScope`，或登录用户）。linked 应用经 App Ops 读取同一内容：`GET /app-ops/menus`（scope `app-ops:permissions:read`）。
+
+来源为 `server/menus.json`（或 `menus.manifest`）。结构（规范见《应用菜单集成规范》）：
+
+```json
+{
+  "schemaVersion": 1,
+  "integration": "remote",
+  "remote": { "name": "orders-app", "preset": "ComponentPreset" },
+  "labelI18n": { "zh-CN": "订单中心", "en-US": "Order Center" },
+  "menus": [
+    { "key": "orders", "label": "订单", "permission": "orders:view", "component": "OrderList" },
+    { "key": "report", "label": "报表", "children": [{ "key": "sales", "label": "销售", "permission": "report:sales:view", "component": "SalesReport" }] }
+  ]
+}
+```
+
+要点：顶层 `labelI18n`（可选）声明子应用自己的多语言名称，建议至少提供 `zh-CN` 与 `en-US`；应用中心与租户可覆盖（优先级：租户配置 > 应用中心配置 > 此处声明 > 应用 `label`）；`remote.name` 必须等于应用 slug；菜单最多两级；叶子菜单 remote 模式需 `component`（`src/components` 下的目录名），iframe / blank 模式需 `path`；`permission` 为子应用权限树内的相对码。runtime 只原样返回，格式校验由应用中心与 `packApp` 负责。
 
 ##### 前端托管
 
