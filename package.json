@@ -1,6 +1,6 @@
 {
   "name": "@kne/fastify-app-runtime",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Fastify 应用运行时插件：前端托管、健康检查、应用设置；可选 APP_OPS_ENABLED 开启远程管理 /app-ops",
   "main": "index.js",
   "scripts": {

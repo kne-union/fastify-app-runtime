@@ -2,7 +2,7 @@ const fp = require('fastify-plugin');
 const path = require('node:path');
 const { sendJson } = require('../utils');
 const { isAppOpsEnabled } = require('./enabled');
-const { createFileStore } = require('./store');
+const { createFileStore, createPlatformDbStore } = require('./store');
 const { requireOpsScope, requireLocalAdmin } = require('./auth');
 const { createLogsRuntime } = require('./logs');
 const { getEnvDeclaration } = require('./env');
@@ -51,36 +51,43 @@ module.exports = fp(async (fastify, options) => {
     return;
   }
 
-  const store = createFileStore({
+  const fileStore = createFileStore({
     rootDir: options.appOps?.dataDir || path.resolve(process.cwd(), './data'),
     fileName: options.appOps?.storeFile
   });
-  // 重启后把已配对主平台灌回 oidc.platforms，否则运维令牌仍按本地 IdP 验签会失败
-  if (fastify.oidc?.platforms?.upsert) {
-    try {
-      const paired = (await store.getPlatforms()).filter(p => p.status === 'paired');
-      for (const p of paired) {
-        fastify.oidc.platforms.upsert({
-          platformOrigin: p.platformOrigin,
-          platformName: p.platformName,
-          issuer: p.issuer || p.oidc?.issuer,
-          audience: p.audience || p.oidc?.audience,
-          spaClientId: p.spaClientId || p.oidc?.clientId,
-          serviceClientId: p.serviceClientId || p.oidc?.serviceClientId,
-          serviceClientSecret: p.oidc?.serviceClientSecret || (p.serviceClientSecretEnc ? Buffer.from(p.serviceClientSecretEnc, 'base64').toString() : null),
-          appCode: p.oidc?.appCode,
-          jwksUri: p.jwksUri,
-          status: 'paired',
-          pairedAt: p.pairedAt
-        });
+  // 平台登记存宿主数据库：文件在版本目录里，部署新版本后会丢。模型须在宿主 sequelize.sync() 之前登记。
+  const platformModel = options.appOps?.platformStore === 'file' ? null : (await fastify.sequelize.addModels(require('./platform-model'))).appOpsPlatform;
+  const platformDbStore = platformModel ? createPlatformDbStore({ model: platformModel }) : null;
+  const store = platformDbStore ? Object.assign(fileStore, platformDbStore) : fileStore;
+
+  // 宿主 sync() 之后表才存在，所以放到 onReady：进程重启后把已配对主平台灌回内存中的 oidc.platforms，否则运维令牌按 iss 验签会失败
+  fastify.addHook('onReady', async () => {
+    if (fastify.oidc?.platforms?.upsert) {
+      try {
+        const paired = (await store.getPlatforms()).filter(p => p.status === 'paired');
+        for (const p of paired) {
+          fastify.oidc.platforms.upsert({
+            platformOrigin: p.platformOrigin,
+            platformName: p.platformName,
+            issuer: p.issuer || p.oidc?.issuer,
+            audience: p.audience || p.oidc?.audience,
+            spaClientId: p.spaClientId || p.oidc?.clientId,
+            serviceClientId: p.serviceClientId || p.oidc?.serviceClientId,
+            serviceClientSecret: p.oidc?.serviceClientSecret || (p.serviceClientSecretEnc ? Buffer.from(p.serviceClientSecretEnc, 'base64').toString() : null),
+            appCode: p.oidc?.appCode,
+            jwksUri: p.jwksUri,
+            status: 'paired',
+            pairedAt: p.pairedAt
+          });
+        }
+        if (paired.length) {
+          fastify.log.info({ count: paired.length }, 'app-ops: hydrated oidc.platforms from paired store');
+        }
+      } catch (err) {
+        fastify.log.warn({ err }, 'app-ops: hydrate oidc.platforms failed');
       }
-      if (paired.length) {
-        fastify.log.info({ count: paired.length }, 'app-ops: hydrated oidc.platforms from paired store');
-      }
-    } catch (err) {
-      fastify.log.warn({ err }, 'app-ops: hydrate oidc.platforms failed');
     }
-  }
+  });
   const logs = createLogsRuntime(fastify, options);
   await logs.start();
   fastify.addHook('onClose', async () => logs.stop());
