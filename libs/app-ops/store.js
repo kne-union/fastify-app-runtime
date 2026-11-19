@@ -5,12 +5,68 @@ const crypto = require('node:crypto');
 const DEFAULT_FILE = 'app-ops-platforms.json';
 
 /**
- * 简易文件存储：platforms[]、access logs、consumed jti。
- * 生产可换 DB；一期保证可运行且不依赖新 model。
+ * 文件里每类数据的容量上限。超过后淘汰最早的记录，避免文件无限增长。
+ * - accessLogs：保留最近 N 条访问日志
+ * - usedJtis：已用 jti 先清掉过期项，仍超限则淘汰最早过期的
+ * - redeemFailures：先清掉未锁定且超过 redeemFailureTtlMs 未更新的计数，仍超限则优先淘汰未锁定、最久未更新的
  */
-const createFileStore = ({ rootDir, fileName = DEFAULT_FILE } = {}) => {
+const DEFAULT_LIMITS = {
+  accessLogs: 5000,
+  usedJtis: 5000,
+  redeemFailures: 1000,
+  redeemFailureTtlMs: 24 * 60 * 60 * 1000
+};
+
+const normalizeOrigin = value =>
+  String(value || '')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+
+/** 清理已用 jti：删除过期项，超过上限则淘汰最早过期的 */
+const pruneJtis = (usedJtis, max, now = Date.now()) => {
+  Object.keys(usedJtis).forEach(jti => {
+    if (!(usedJtis[jti] > now)) {
+      delete usedJtis[jti];
+    }
+  });
+  const overflow = Object.keys(usedJtis).length - max;
+  if (overflow > 0) {
+    Object.keys(usedJtis)
+      .sort((a, b) => usedJtis[a] - usedJtis[b])
+      .slice(0, overflow)
+      .forEach(jti => delete usedJtis[jti]);
+  }
+};
+
+/** 清理兑换失败计数：删除未锁定且长期未更新的，超过上限则优先淘汰未锁定、最久未更新的 */
+const pruneRedeemFailures = (redeemFailures, { max, ttlMs }, now = Date.now()) => {
+  const isLocked = item => item.lockedUntil > now;
+  Object.keys(redeemFailures).forEach(installId => {
+    const item = redeemFailures[installId];
+    if (!isLocked(item) && !((item.updatedAt || 0) > now - ttlMs)) {
+      delete redeemFailures[installId];
+    }
+  });
+  const overflow = Object.keys(redeemFailures).length - max;
+  if (overflow > 0) {
+    Object.keys(redeemFailures)
+      .sort((a, b) => {
+        const lockedDiff = Number(isLocked(redeemFailures[a])) - Number(isLocked(redeemFailures[b]));
+        return lockedDiff || (redeemFailures[a].updatedAt || 0) - (redeemFailures[b].updatedAt || 0);
+      })
+      .slice(0, overflow)
+      .forEach(installId => delete redeemFailures[installId]);
+  }
+};
+
+/**
+ * 简易文件存储：platforms[]、access logs、consumed jti、兑换失败计数。
+ * 平台登记在宿主有数据库时改存数据库（见 createPlatformDbStore），这里的 platforms 仅作无数据库时的回退。
+ */
+const createFileStore = ({ rootDir, fileName = DEFAULT_FILE, limits } = {}) => {
   const dir = rootDir || path.resolve(process.cwd(), './data');
   const filePath = path.join(dir, fileName);
+  const maxOf = Object.assign({}, DEFAULT_LIMITS, limits);
   let cache = null;
 
   const ensure = async () => {
@@ -18,6 +74,12 @@ const createFileStore = ({ rootDir, fileName = DEFAULT_FILE } = {}) => {
     if (!cache) {
       try {
         cache = JSON.parse(await fs.promises.readFile(filePath, 'utf8'));
+        // 旧版本文件没有上限，加载时按当前上限收敛一次
+        cache.accessLogs = (cache.accessLogs || []).slice(0, maxOf.accessLogs);
+        cache.usedJtis = cache.usedJtis || {};
+        cache.redeemFailures = cache.redeemFailures || {};
+        pruneJtis(cache.usedJtis, maxOf.usedJtis);
+        pruneRedeemFailures(cache.redeemFailures, { max: maxOf.redeemFailures, ttlMs: maxOf.redeemFailureTtlMs });
       } catch (e) {
         if (e.code !== 'ENOENT') {
           throw e;
@@ -90,9 +152,8 @@ const createFileStore = ({ rootDir, fileName = DEFAULT_FILE } = {}) => {
           entry
         )
       );
-      const max = 5000;
-      if (data.accessLogs.length > max) {
-        data.accessLogs.length = max;
+      if (data.accessLogs.length > maxOf.accessLogs) {
+        data.accessLogs.length = maxOf.accessLogs;
       }
       await persist();
     },
@@ -124,6 +185,7 @@ const createFileStore = ({ rootDir, fileName = DEFAULT_FILE } = {}) => {
     async addJti(jti, ttlMs) {
       const data = await ensure();
       data.usedJtis[jti] = Date.now() + ttlMs;
+      pruneJtis(data.usedJtis, maxOf.usedJtis);
       await persist();
     },
     async bumpRedeemFailure(installId) {
@@ -134,7 +196,9 @@ const createFileStore = ({ rootDir, fileName = DEFAULT_FILE } = {}) => {
         cur.lockedUntil = Date.now() + 15 * 60 * 1000;
         cur.count = 0;
       }
+      cur.updatedAt = Date.now();
       data.redeemFailures[installId] = cur;
+      pruneRedeemFailures(data.redeemFailures, { max: maxOf.redeemFailures, ttlMs: maxOf.redeemFailureTtlMs });
       await persist();
       return cur;
     },
@@ -150,4 +214,47 @@ const createFileStore = ({ rootDir, fileName = DEFAULT_FILE } = {}) => {
   };
 };
 
-module.exports = { createFileStore, DEFAULT_FILE };
+/**
+ * 平台登记的数据库存储：行内容原样存进 data（JSON 列），与文件存储的行结构一致，调用方无需改动。
+ * originKey 为规范化后的主平台地址，用于唯一约束与查找。
+ * 数据库跨版本部署保留，不会随版本目录被清理。
+ */
+const createPlatformDbStore = ({ model }) => {
+  const toRow = record => (record ? record.data : null);
+
+  return {
+    async count() {
+      return model.count();
+    },
+    async getPlatforms() {
+      const records = await model.findAll({ order: [['createdAt', 'ASC']] });
+      return records.map(toRow);
+    },
+    async upsertPlatform(row) {
+      const originKey = normalizeOrigin(row.platformOrigin);
+      const existing = await model.findOne({ where: { originKey } });
+      const data = Object.assign({}, toRow(existing), row);
+      if (existing) {
+        await existing.update({ installId: data.installId || null, data });
+      } else {
+        await model.create({ originKey, installId: data.installId || null, data });
+      }
+      return data;
+    },
+    async removePlatform(platformOrigin) {
+      const removed = await model.destroy({ where: { originKey: normalizeOrigin(platformOrigin) } });
+      return removed > 0;
+    },
+    async findPlatformByOrigin(platformOrigin) {
+      return toRow(await model.findOne({ where: { originKey: normalizeOrigin(platformOrigin) } }));
+    },
+    async findPlatformByInstallId(installId) {
+      if (!installId) {
+        return null;
+      }
+      return toRow(await model.findOne({ where: { installId } }));
+    }
+  };
+};
+
+module.exports = { createFileStore, createPlatformDbStore, DEFAULT_FILE, DEFAULT_LIMITS };
